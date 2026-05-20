@@ -14,6 +14,7 @@ The software is developed primarily for:
 - Intelligent optimization algorithms
 - Genetic algorithm based trajectory optimization
 - Robot motion sequence optimization
+- CAD model based scanning trajectory planning
 
 ## Research Background
 
@@ -34,7 +35,9 @@ Traditional shortest-path optimization methods mainly focus on geometric distanc
 - Pose-constrained viewpoint sequencing
 - Path length and pose variation collaborative optimization
 - Evolutionary operator coordination mechanism
-- MATLAB-based algorithm implementation
+- CAD-based geometric processing
+- PythonOCC geometric modeling and visualization
+- PyQt5 graphical user interface
 - Research-oriented experimental framework
 
 ## Repository Structure
@@ -43,8 +46,10 @@ Traditional shortest-path optimization methods mainly focus on geometric distanc
 Scanning-measurement-path-planning-software/
 │
 ├── algorithm/          # Core optimization algorithms
+├── geometry/           # CAD and geometric processing modules
+├── gui/                # PyQt5 graphical user interface
+├── visualization/      # Visualization and rendering modules
 ├── data/               # Experimental or simulation data
-├── figures/            # Figures and visualization outputs
 ├── results/            # Optimization results and evaluation outputs
 ├── utils/              # Utility functions
 ├── tests/              # Validation or testing scripts
@@ -55,11 +60,12 @@ Scanning-measurement-path-planning-software/
 
 The proposed framework combines:
 
-1. Multi-viewpoint representation
-2. Path sequence optimization
-3. Pose variation evaluation
-4. Multi-strategy collaborative evolution
-5. Adaptive operator coordination
+1. CAD model processing
+2. Multi-viewpoint representation
+3. Path sequence optimization
+4. Pose variation evaluation
+5. Multi-strategy collaborative evolution
+6. Adaptive operator coordination
 
 The optimization objective jointly considers:
 
@@ -70,8 +76,25 @@ The optimization objective jointly considers:
 
 ## Development Environment
 
-- MATLAB
-- Robotics-related numerical optimization environment
+### Core Environment
+
+- Python 3.x
+- PythonOCC
+- PyQt5
+
+### Scientific Computing Libraries
+
+- NumPy
+- SciPy
+- Matplotlib
+
+### Functional Modules
+
+- CAD geometric processing
+- Free-form surface visualization
+- Scanning viewpoint interaction
+- Evolutionary optimization
+- Robot trajectory rendering
 
 ## Potential Application Scenarios
 
@@ -80,6 +103,7 @@ The optimization objective jointly considers:
 - Aerospace component inspection
 - Precision measurement systems
 - Intelligent manufacturing
+- Digital twin based inspection planning
 
 ## Current Status
 
@@ -89,9 +113,11 @@ Future updates may include:
 
 - Additional optimization strategies
 - Comparative experiments
-- Visualization modules
+- Advanced visualization modules
+- Robot kinematic constraints
 - Hardware integration interfaces
 - Complete experimental datasets
+- Interactive scanning planning GUI
 
 ## Citation
 
