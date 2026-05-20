@@ -1,0 +1,399 @@
+"""Geometry operations: face normals, segmentation, OBB, viewpoints, coordinate systems.
+
+All functions in this module are *pure* or receive the OCC viewer (``display``)
+as an explicit parameter so that no global state is required.
+"""
+
+import math
+from OCC.Core.gp import gp_Pnt, gp_Vec, gp_Dir, gp_Ax1, gp_Ax2, gp_Ax3, gp_Trsf, gp_XYZ
+from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+from OCC.Core.BRep import BRep_Tool
+from OCC.Core.BRepGProp import brepgprop
+from OCC.Core.GProp import GProp_GProps
+from OCC.Core.BRepBndLib import brepbndlib_AddOBB
+from OCC.Core.Bnd import Bnd_OBB
+from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeSphere
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+from OCC.Core.ShapeAnalysis import ShapeAnalysis_Surface
+from OCC.Core.BOPAlgo import BOPAlgo_Splitter
+from OCC.Extend.TopologyUtils import TopologyExplorer
+from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.TopAbs import TopAbs_FACE
+from OCC.Core.Geom import Geom_Axis2Placement
+from OCC.Core.AIS import AIS_Trihedron
+from OCC.Display.OCCViewer import rgb_color
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def clamp_segments(value, minimum=1, maximum=100):
+    """Clamp segmentation count to a sane range."""
+    return max(minimum, min(maximum, int(value)))
+
+
+# ---------------------------------------------------------------------------
+# Face normal
+# ---------------------------------------------------------------------------
+
+def calculate_face_normal(face, reference_normal=None):
+    """Calculate the outward-pointing normal of *face*.
+
+    Parameters
+    ----------
+    face : TopoDS_Face
+    reference_normal : gp_Vec or None
+        When given, the returned normal is flipped (if necessary) so that
+        its dot-product with *reference_normal* is positive.  This keeps
+        normals consistent across split patches of the same original face.
+
+    Returns
+    -------
+    gp_Vec
+    """
+    try:
+        adaptor = BRepAdaptor_Surface(face)
+
+        try:
+            u_min = adaptor.FirstUParameter()
+            u_max = adaptor.LastUParameter()
+            v_min = adaptor.FirstVParameter()
+            v_max = adaptor.LastVParameter()
+        except Exception:
+            u_min, u_max, v_min, v_max = 0.0, 1.0, 0.0, 1.0
+
+        u_mid = (u_min + u_max) / 2.0
+        v_mid = (v_min + v_max) / 2.0
+
+        # --- primary method: partial derivatives at centre ---
+        normal = _normal_from_derivatives(adaptor, u_mid, v_mid, reference_normal)
+
+        if normal is None:
+            # --- fallback: three surface points ---
+            normal = _normal_from_points(face, u_min, u_max, v_min, v_max, reference_normal)
+
+        if normal is None:
+            normal = _default_normal(reference_normal)
+
+        return normal
+
+    except Exception as e:
+        print("Error calculating normal: {}".format(str(e)))
+        return _default_normal(reference_normal)
+
+
+def _normal_from_derivatives(adaptor, u, v, reference_normal):
+    """Compute normal via D1 partial derivatives."""
+    try:
+        d1u = gp_Vec()
+        d1v = gp_Vec()
+        p = gp_Pnt()
+        adaptor.D1(u, v, p, d1u, d1v)
+        normal = d1u.Crossed(d1v)
+        if normal.SquareMagnitude() > 1e-10:
+            normal.Normalize()
+            return _align_normal(normal, reference_normal)
+    except Exception:
+        pass
+    return None
+
+
+def _normal_from_points(face, u_min, u_max, v_min, v_max, reference_normal):
+    """Compute normal from three sample points on the surface."""
+    try:
+        p1 = BRep_Tool.Value(u_min, v_min, face)
+        p2 = BRep_Tool.Value(u_max, v_min, face)
+        p3 = BRep_Tool.Value(u_min, v_max, face)
+        vec1 = gp_Vec(p1, p2)
+        vec2 = gp_Vec(p1, p3)
+        normal = vec1.Crossed(vec2)
+        if normal.SquareMagnitude() > 1e-10:
+            normal.Normalize()
+            return _align_normal(normal, reference_normal)
+    except Exception:
+        pass
+    return None
+
+
+def _align_normal(normal, reference_normal):
+    """Flip *normal* so it points in the same hemisphere as *reference_normal*."""
+    if reference_normal is not None:
+        if normal.Dot(reference_normal) < 0:
+            normal = normal.Reversed()
+    else:
+        up = gp_Vec(0, 0, 1)
+        if normal.Dot(up) < 0:
+            normal = normal.Reversed()
+    return normal
+
+
+def _default_normal(reference_normal):
+    if reference_normal is not None:
+        return reference_normal.Normalized()
+    return gp_Vec(0, 0, 1)
+
+
+# ---------------------------------------------------------------------------
+# Viewpoint generation
+# ---------------------------------------------------------------------------
+
+def generate_viewpoint(center, normal, distance=300.0):
+    """Offset *center* along *normal* by *distance* and return the new point."""
+    try:
+        if normal.Magnitude() > 0:
+            n = gp_Vec(normal.X(), normal.Y(), normal.Z())
+            n.Normalize()
+            scaled = gp_Vec(n.X() * distance, n.Y() * distance, n.Z() * distance)
+            vp = gp_Vec(center.X(), center.Y(), center.Z()) + scaled
+            return gp_Pnt(vp.X(), vp.Y(), vp.Z())
+    except Exception as e:
+        print("Error generating viewpoint: {}".format(str(e)))
+    return center
+
+
+# ---------------------------------------------------------------------------
+# Coordinate-system display
+# ---------------------------------------------------------------------------
+
+def display_coordinate_system(display, position, normal, size=50.0, center=None):
+    """Display a small trihedron at *position* and return its AIS handle.
+
+    Parameters
+    ----------
+    display : OCC viewer handle
+    position : gp_Pnt
+    normal : gp_Vec
+    size : float
+    center : gp_Pnt or None
+        When given, the Z axis of the trihedron points from *position*
+        towards *center*.
+    """
+    try:
+        z_vec = _compute_z_axis(position, normal, center)
+        x_vec = _orthogonal_x(z_vec)
+
+        ax2 = gp_Ax2(position, gp_Dir(z_vec), gp_Dir(x_vec))
+        axis_placement = Geom_Axis2Placement(ax2)
+        trihedron = AIS_Trihedron(axis_placement)
+        trihedron.SetSize(size)
+
+        ctx = display.Context
+        ctx.SetAutoActivateSelection(False)
+        ctx.Display(trihedron, True)
+        return trihedron
+    except Exception as e:
+        print("Error creating coordinate system: {}".format(str(e)))
+        return None
+
+
+def _compute_z_axis(position, normal, center):
+    """Return the Z-axis direction vector."""
+    if center is not None:
+        z = gp_Vec(position, center)
+        if z.Magnitude() > 0:
+            z.Normalize()
+            return z
+    if isinstance(normal, gp_Vec):
+        return normal.Normalized()
+    return gp_Vec(normal.X(), normal.Y(), normal.Z()).Normalized()
+
+
+def _orthogonal_x(z_vec):
+    """Gram-Schmidt: find an X axis perpendicular to *z_vec*."""
+    ref = gp_Vec(1, 0, 0)
+    if abs(ref.Dot(z_vec)) > 0.999:
+        ref = gp_Vec(0, 1, 0)
+    proj = gp_Vec(z_vec.X() * ref.Dot(z_vec),
+                   z_vec.Y() * ref.Dot(z_vec),
+                   z_vec.Z() * ref.Dot(z_vec))
+    x = ref - proj
+    if x.Magnitude() > 0:
+        x.Normalize()
+        return x
+    return gp_Vec(1, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# OBB
+# ---------------------------------------------------------------------------
+
+def ConvertBndToShape(theBox):
+    """Convert a ``Bnd_OBB`` to a ``TopoDS_Shape`` box for visualisation."""
+    try:
+        c = theBox.Center()
+        xd = theBox.XDirection()
+        yd = theBox.YDirection()
+        zd = theBox.ZDirection()
+        hx = theBox.XHSize()
+        hy = theBox.YHSize()
+        hz = theBox.ZHSize()
+
+        ax = gp_XYZ(xd.X(), xd.Y(), xd.Z())
+        ay = gp_XYZ(yd.X(), yd.Y(), yd.Z())
+        az = gp_XYZ(zd.X(), zd.Y(), zd.Z())
+
+        p = gp_Pnt(c.X(), c.Y(), c.Z())
+        axes = gp_Ax2(p, gp_Dir(zd), gp_Dir(xd))
+        axes.SetLocation(gp_Pnt(p.XYZ() - ax * hx - ay * hy - az * hz))
+
+        return BRepPrimAPI_MakeBox(axes, 2.0 * hx, 2.0 * hy, 2.0 * hz).Shape()
+    except Exception as e:
+        print("Error converting OBB to shape: {}".format(str(e)))
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def generate_face_obb(face):
+    """Generate an OBB bounding box for *face*.
+
+    Returns
+    -------
+    (obb, obb_shape, obb_color) or (None, None, None)
+    """
+    try:
+        obb = Bnd_OBB()
+        brepbndlib_AddOBB(face, obb)
+        obb_shape = ConvertBndToShape(obb)
+        obb_color = rgb_color(0, 0, 1)
+        return obb, obb_shape, obb_color
+    except Exception as e:
+        print("Error generating OBB: {}".format(str(e)))
+        import traceback
+        traceback.print_exc()
+        return None, None, None
+
+
+# ---------------------------------------------------------------------------
+# Surface segmentation
+# ---------------------------------------------------------------------------
+
+def segment_model(shape, u=6, v=4):
+    """Segment *shape* into ``u * v`` patches per original face.
+
+    Uses iso-parametric lines (``ShapeAnalysis_Surface``) and
+    ``BOPAlgo_Splitter`` for equally-spaced splitting.
+
+    Returns
+    -------
+    list of TopoDS_Face
+    """
+    try:
+        patches = []
+        exp = TopExp_Explorer(shape, TopAbs_FACE)
+        while exp.More():
+            face = exp.Current()
+            try:
+                face_patches = _segment_single_face(face, u, v)
+                patches.extend(face_patches)
+            except Exception as e:
+                print("Error splitting single face: {}".format(str(e)))
+                patches.append(face)
+            exp.Next()
+
+        if not patches:
+            exp = TopExp_Explorer(shape, TopAbs_FACE)
+            while exp.More():
+                patches.append(exp.Current())
+                exp.Next()
+
+        print("Model segmentation complete, total {} patches (u={}, v={})".format(
+            len(patches), u, v))
+        return patches
+    except Exception as e:
+        print("Error segmenting model: {}".format(str(e)))
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def _segment_single_face(face, u, v):
+    """Segment one face into u*v patches."""
+    surf = BRep_Tool.Surface(face)
+    adaptor = BRepAdaptor_Surface(face)
+    try:
+        u_min = adaptor.FirstUParameter()
+        u_max = adaptor.LastUParameter()
+        v_min = adaptor.FirstVParameter()
+        v_max = adaptor.LastVParameter()
+    except Exception:
+        u_min, u_max, v_min, v_max = 0.0, 1.0, 0.0, 1.0
+
+    sas = ShapeAnalysis_Surface(surf)
+
+    if u == 1 and v == 1:
+        return [face]
+
+    # --- split in V direction ---
+    v_faces = [face]
+    if v > 1:
+        for level in range(v - 1):
+            new_v = []
+            any_split = False
+            for vf in v_faces:
+                v_pos = v_min + (v_max - v_min) * (level + 1) / v
+                result = _split_face_iso(sas, vf, v_pos, axis="v")
+                if len(result) >= 2:
+                    new_v.extend(result)
+                    any_split = True
+                else:
+                    new_v.append(vf)
+            if any_split:
+                v_faces = new_v
+            else:
+                break
+
+    # --- split in U direction ---
+    patches = []
+    for vf in v_faces:
+        if u > 1:
+            u_faces = [vf]
+            for level in range(u - 1):
+                new_u = []
+                any_split = False
+                for uf in u_faces:
+                    u_pos = u_min + (u_max - u_min) * (level + 1) / u
+                    result = _split_face_iso(sas, uf, u_pos, axis="u")
+                    if len(result) >= 2:
+                        new_u.extend(result)
+                        any_split = True
+                    else:
+                        new_u.append(uf)
+                if any_split:
+                    u_faces = new_u
+                else:
+                    break
+            patches.extend(u_faces)
+        else:
+            patches.append(vf)
+
+    return patches
+
+
+def _split_face_iso(sas, face, param, axis="u"):
+    """Split *face* along one iso-parametric line."""
+    try:
+        if axis == "u":
+            iso = sas.UIso(param)
+        else:
+            iso = sas.VIso(param)
+        edge = BRepBuilderAPI_MakeEdge(iso).Edge()
+
+        splitter = BOPAlgo_Splitter()
+        splitter.AddArgument(face)
+        splitter.AddTool(edge)
+        splitter.Perform()
+
+        return _collect_faces(splitter.Shape())
+    except Exception:
+        return [face]
+
+
+def _collect_faces(shape):
+    """Collect all faces from *shape*."""
+    faces = []
+    explorer = TopologyExplorer(shape)
+    for f in explorer.faces():
+        faces.append(f)
+    return faces
