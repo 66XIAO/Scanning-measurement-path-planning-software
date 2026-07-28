@@ -26,6 +26,7 @@ class AppState:
     # Model state
     current_shape: object = None
     current_faces: list = field(default_factory=list)
+    last_segmentation_diagnostics: dict = field(default_factory=dict)
     selected_face: object = None
     original_face_normal: object = None
 
@@ -46,6 +47,16 @@ class AppState:
     # Path
     optimal_path: list = field(default_factory=list)
     last_path_length: float = 0.0
+
+    # Speed planning (created only after an ordered path exists)
+    speed_plan_result: object = None
+    last_speed_csv_path: str = ""
+    last_robodk_import: dict = field(default_factory=dict)
+
+    # Scanner mounting calibration. The object is an ExtrinsicConfig instance.
+    extrinsic_config: object = None
+    extrinsic_config_path: str = ""
+    extrinsic_config_sha256: str = ""
 
     # Collision / sensor
     sensor_size_config: dict = field(default_factory=lambda: {"width": 80, "height": 60, "depth": 80})
@@ -86,6 +97,7 @@ class AppState:
     def reset_all(self):
         self.current_shape = None
         self.current_faces.clear()
+        self.last_segmentation_diagnostics.clear()
         self.selected_face = None
         self.original_face_normal = None
         self.face_centers.clear()
@@ -98,6 +110,9 @@ class AppState:
         self.optimal_viewpoints_with_pose.clear()
         self.optimal_path.clear()
         self.last_path_length = 0.0
+        self.speed_plan_result = None
+        self.last_speed_csv_path = ""
+        self.last_robodk_import.clear()
         self.sensor_volumes_list.clear()
         self.face_obbs.clear()
         self.coordinate_systems.clear()
@@ -126,6 +141,9 @@ class AppState:
         self.face_obbs.clear()
         self.optimal_path.clear()
         self.last_path_length = 0.0
+        self.speed_plan_result = None
+        self.last_speed_csv_path = ""
+        self.last_robodk_import.clear()
         self.reference_normal = None
         self.collision_process_started = False
         self.collision_process_finished = False

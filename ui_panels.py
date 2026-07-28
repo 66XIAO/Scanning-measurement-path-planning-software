@@ -36,6 +36,8 @@ DEFAULT_WORKFLOW_STEPS = [
     WorkflowStep("obb", "Generate OBB"),
     WorkflowStep("collision", "Collision Check"),
     WorkflowStep("path", "Path Planning"),
+    WorkflowStep("speed", "Speed Planning"),
+    WorkflowStep("robodk", "RoboDK Import"),
     WorkflowStep("export", "Export CSV"),
 ]
 
@@ -58,10 +60,16 @@ class WorkflowSnapshot:
     collisions_executed: bool = False
     path_points: int = 0
     path_length: float = 0.0
+    speed_points: int = 0
+    speed_total_time: float = 0.0
+    speed_feasible: bool = False
+    robodk_program: str = ""
 
 
 def build_workflow_snapshot(state):
     """Collect a compact status snapshot from *state* (AppState or equivalent)."""
+    speed_result = getattr(state, 'speed_plan_result', None)
+    robodk_import = getattr(state, 'last_robodk_import', {}) or {}
     return WorkflowSnapshot(
         model_loaded=getattr(state, 'current_shape', None) is not None,
         selected_face=getattr(state, 'selected_face', None) is not None,
@@ -75,6 +83,10 @@ def build_workflow_snapshot(state):
         collisions_executed=getattr(state, 'collision_detection_executed', False),
         path_points=len(getattr(state, 'optimal_path', [])),
         path_length=getattr(state, 'last_path_length', 0.0),
+        speed_points=len(speed_result.points) if speed_result is not None else 0,
+        speed_total_time=speed_result.total_time if speed_result is not None else 0.0,
+        speed_feasible=bool(speed_result.feasible) if speed_result is not None else False,
+        robodk_program=str(robodk_import.get('program', '')),
     )
 
 
@@ -93,7 +105,11 @@ def format_workflow_snapshot(snap):
         "OBB boxes: {}\n"
         "Collision checked: {}\n"
         "Path points: {}\n"
-        "Path length: {:.4f}"
+        "Path length: {:.4f}\n"
+        "Speed plan points: {}\n"
+        "Planned scan time: {:.4f} s\n"
+        "Speed constraints feasible: {}\n"
+        "RoboDK program: {}"
     ).format(
         'Yes' if snap.model_loaded else 'No',
         'Yes' if snap.selected_face else 'No',
@@ -102,6 +118,9 @@ def format_workflow_snapshot(snap):
         snap.sensor_volumes, snap.obb_boxes,
         'Yes' if snap.collisions_executed else 'No',
         snap.path_points, snap.path_length,
+        snap.speed_points, snap.speed_total_time,
+        'Yes' if snap.speed_feasible else 'No',
+        snap.robodk_program or '-',
     )
 
 
@@ -153,9 +172,8 @@ def show_topmost_message(title, message, type="info"):
     -------
     'yes' / 'no' for question type, otherwise None.
     """
-    from PyQt5.QtWidgets import QMessageBox
-
     QtCore, QtWidgets = _get_qt()
+    QMessageBox = QtWidgets.QMessageBox
     parent = get_main_window()
 
     msg = QMessageBox(parent)
@@ -177,7 +195,7 @@ def show_topmost_message(title, message, type="info"):
         msg.setIcon(QMessageBox.Question)
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
 
-    result = msg.exec_()
+    result = (getattr(msg, "exec", None) or getattr(msg, "exec_"))()
     if type == "question":
         return "yes" if result == QMessageBox.Yes else "no"
     return None
@@ -324,7 +342,7 @@ def get_user_segment_params(parent=None):
 
     Returns
     -------
-    (u, v) tuple of ints
+    (u, v) tuple of ints, or None if cancelled
     """
     try:
         QtCore, QtWidgets = _get_qt()
@@ -346,7 +364,8 @@ def get_user_segment_params(parent=None):
 
         def update_preview():
             preview_label.setText(
-                "Expected patches per original face: {}".format(
+                "Requested maximum grid per original face: {} "
+                "(trimmed/periodic faces may produce fewer valid patches)".format(
                     u_spin.value() * v_spin.value()))
 
         u_spin.valueChanged.connect(update_preview)
@@ -363,10 +382,10 @@ def get_user_segment_params(parent=None):
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
 
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+        if (getattr(dialog, "exec", None) or getattr(dialog, "exec_"))() == QtWidgets.QDialog.Accepted:
             u, v = u_spin.value(), v_spin.value()
         else:
-            u, v = 6, 4
+            return None
 
         print("Using segmentation parameters: u={}, v={}".format(u, v))
         return u, v
@@ -413,7 +432,7 @@ def get_sensor_parameters_dialog(parent=None, current_config=None):
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
 
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if (getattr(dialog, "exec", None) or getattr(dialog, "exec_"))() != QtWidgets.QDialog.Accepted:
             return None
 
         return {k: spins[k].value() for k in ("width", "height", "depth")}

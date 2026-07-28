@@ -1,7 +1,11 @@
 def create_background_worker_class(QtCore):
+    Signal = getattr(QtCore, "pyqtSignal", getattr(QtCore, "Signal", None))
+    if Signal is None:
+        raise RuntimeError("The selected Qt binding does not expose Signal/pyqtSignal")
+
     class BackgroundWorker(QtCore.QThread):
-        finished_with_result = QtCore.pyqtSignal(object)
-        failed_with_error = QtCore.pyqtSignal(str)
+        finished_with_result = Signal(object)
+        failed_with_error = Signal(str)
 
         def __init__(self, fn, parent=None):
             super().__init__(parent)

@@ -9,6 +9,7 @@ import sys
 import os
 import math
 import csv
+import hashlib
 import traceback
 
 import numpy as np
@@ -48,15 +49,26 @@ from ui_panels import (
     get_sensor_parameters_dialog, show_usage_instructions, build_workflow_snapshot,
     format_workflow_snapshot,
 )
-from workers import create_background_worker_class, TaskRunner
-from export_utils import write_path_pose_csv
+from workers import TaskRunner
+from export_utils import write_path_pose_csv, write_speed_plan_csv
+from speed_planning_core import ConstraintProfile, plan_speed_profile
+from speed_planning_ui import get_speed_planning_settings, get_robodk_import_settings
+from robodk_bridge import import_speed_plan
+from pose_transform import load_extrinsic_config, transform_pose_records
 
 
 # ---------------------------------------------------------------------------
 # 1. OCC viewer initialisation (must happen before any Qt widget work)
 # ---------------------------------------------------------------------------
 
-display, start_display, add_menu, add_function_to_menu = init_display("pyqt5")
+try:
+    import PyQt5  # noqa: F401
+    QT_BACKEND = "pyqt5"
+except ImportError:
+    import PySide6  # noqa: F401
+    QT_BACKEND = "pyside6"
+
+display, start_display, add_menu, add_function_to_menu = init_display(QT_BACKEND)
 QtCore, QtGui, QtWidgets, QtOpenGL = get_qt_modules()
 
 # Set a recognisable window title so ui_panels.get_main_window() can find it.
@@ -86,9 +98,7 @@ center_points_objects = []
 normal_line_objects = []
 
 # Background-task infrastructure
-BackgroundWorker = create_background_worker_class(QtCore)
-active_workers = []
-active_progress_dialogs = []
+task_runner = TaskRunner(QtCore, QtWidgets, get_main_window)
 
 # Path-planning confirmation flag
 path_planning_prompt_confirmed = False
@@ -116,7 +126,7 @@ class MainWindowCloseEvent(QtCore.QObject):
             # Only intercept Close events from the main window itself,
             # not from child widgets (e.g. QMessageBox closing).
             main_win = get_main_window()
-            if main_win is not None and obj is not main_win:
+            if main_win is None or obj is not main_win:
                 return super(MainWindowCloseEvent, self).eventFilter(obj, event)
             _closing_dialog_active = True
             try:
@@ -182,42 +192,12 @@ def _sync_layer():
 # ---------------------------------------------------------------------------
 
 def run_background_task(title, message, fn, on_success, on_error=None):
-    parent = get_main_window()
-    progress = QtWidgets.QProgressDialog(message, None, 0, 0, parent)
-    progress.setWindowTitle(title)
-    progress.setWindowModality(QtCore.Qt.WindowModal)
-    progress.setMinimumDuration(0)
-    progress.setAutoClose(False)
-    progress.setAutoReset(False)
-    progress.show()
-
-    worker = BackgroundWorker(fn, parent)
-    active_workers.append(worker)
-    active_progress_dialogs.append(progress)
-
-    def cleanup():
-        progress.close()
-        if worker in active_workers:
-            active_workers.remove(worker)
-        if progress in active_progress_dialogs:
-            active_progress_dialogs.remove(progress)
-        worker.deleteLater()
-
-    def success(result):
-        cleanup()
-        on_success(result)
-
     def failure(error_text):
-        cleanup()
         if on_error:
             on_error(error_text)
         else:
             show_topmost_message("Error", error_text, type="error")
-
-    worker.finished_with_result.connect(success)
-    worker.failed_with_error.connect(failure)
-    worker.start()
-    return worker
+    return task_runner.run(title, message, fn, on_success, failure)
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +207,9 @@ def run_background_task(title, message, fn, on_success, on_error=None):
 def _delete_existing_path():
     state.optimal_path.clear()
     state.last_path_length = 0.0
+    state.speed_plan_result = None
+    state.last_speed_csv_path = ""
+    state.last_robodk_import.clear()
     for obj in state.optimal_path_objects:
         try:
             display.Context.Erase(obj, True)
@@ -253,16 +236,7 @@ def _confirm_path_prompt():
 # ---------------------------------------------------------------------------
 
 def import_model(event=None):
-    state.current_faces.clear()
-    state.face_centers.clear()
-    state.view_points.clear()
-    state.optimal_viewpoints.clear()
-    state.optimal_viewpoints_with_pose.clear()
-    state.optimal_path.clear()
-    state.coordinate_systems.clear()
-    path_planning_prompt_confirmed = False
-    state.last_path_length = 0.0
-
+    global path_planning_prompt_confirmed
     parent = get_main_window()
     file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
         parent, "Import Model", "",
@@ -273,34 +247,42 @@ def import_model(event=None):
     if not file_path:
         return
 
-    try:
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        try:
-            ext = os.path.splitext(file_path)[1].lower()
-            if ext in ('.step', '.stp'):
-                state.current_shape = read_step_file(file_path)
-            elif ext in ('.iges', '.igs'):
-                state.current_shape = read_iges_file(file_path)
-            else:
-                print("Unsupported file format")
-                return
-            QtWidgets.QApplication.processEvents()
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in ('.step', '.stp', '.iges', '.igs'):
+        show_topmost_message("Error", "Unsupported file format: {}".format(ext), type="error")
+        return
 
-            display.EraseAll()
-            display.DisplayShape(state.current_shape, color=rgb_color(0.7, 0.7, 0.7))
-            display.FitAll()
-            _update_workflow("Model imported: {}".format(os.path.basename(file_path)))
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
+    def load_shape():
+        if ext in ('.step', '.stp'):
+            return read_step_file(file_path)
+        return read_iges_file(file_path)
 
+    def on_success(new_shape):
+        global path_planning_prompt_confirmed
+        # Commit atomically only after parsing succeeds. Cancelling or a read
+        # error leaves the previously loaded model and downstream state intact.
+        display.EraseAll()
+        state.reset_all()
+        state.current_shape = new_shape
+        path_planning_prompt_confirmed = False
+        display.DisplayShape(new_shape, color=rgb_color(0.7, 0.7, 0.7))
+        display.FitAll()
+        display.Repaint()
+        _sync_layer()
+        _update_workflow("Model imported: {}".format(os.path.basename(file_path)))
         print("Model imported successfully: {}".format(os.path.basename(file_path)))
-    except Exception as e:
-        QtWidgets.QApplication.restoreOverrideCursor()
-        show_topmost_message("Error", "Error importing model: {}".format(str(e)), type="error")
-        traceback.print_exc()
+
+    def on_error(error_text):
+        print("Error importing model: {}".format(error_text))
+        show_topmost_message("Error", "Error importing model:\n{}".format(error_text), type="error")
+
+    set_status_message("Loading CAD model in background: {}".format(os.path.basename(file_path)))
+    run_background_task("Import Model", "Reading STEP/IGES model...",
+                        load_shape, on_success, on_error)
 
 
 def clear_model(event=None):
+    global path_planning_prompt_confirmed
     result = show_topmost_message(
         "Confirm Clear", "Are you sure you want to clear all models and data?", type="question")
     if result == 'no':
@@ -401,8 +383,11 @@ def segment_faces(event=None):
         show_topmost_message("Prompt", "Please import a model first")
         return
     try:
-        u, v = get_user_segment_params()
-
+        params = get_user_segment_params()
+        if not params:
+            return
+        u, v = params
+        shape_to_segment = state.current_shape
         if state.selected_face is not None:
             from OCC.Core.TopoDS import TopoDS_Compound
             from OCC.Core.BRep import BRep_Builder
@@ -410,23 +395,45 @@ def segment_faces(event=None):
             builder = BRep_Builder()
             builder.MakeCompound(compound)
             builder.Add(compound, state.selected_face)
-            faces = segment_model(compound, u, v)
-        else:
-            faces = segment_model(state.current_shape, u, v)
+            shape_to_segment = compound
 
-        state.current_faces = faces
-        state.invalidate_after_segmentation()
+        def on_success(result):
+            faces, diagnostics = result
+            if not faces:
+                show_topmost_message("Error", "Segmentation returned no valid faces", type="error")
+                return
+            state.current_faces = faces
+            state.invalidate_after_segmentation()
+            state.last_segmentation_diagnostics = diagnostics
+            display.EraseAll()
+            colors = [
+                rgb_color(0.8, 0.8, 1.0), rgb_color(1.0, 0.8, 0.8),
+                rgb_color(0.8, 1.0, 0.8), rgb_color(1.0, 1.0, 0.8),
+            ]
+            for i, face in enumerate(state.current_faces):
+                display.DisplayShape(face, color=colors[i % len(colors)], update=False)
+            display.FitAll()
+            display.Repaint()
+            print("Segmentation complete: {} patches (u={}, v={}), area ratio {:.6f}".format(
+                len(faces), u, v, diagnostics.get("area_ratio", 0.0)))
+            _update_workflow("Face segmentation complete: {} patches, area ratio {:.6f}".format(
+                len(faces), diagnostics.get("area_ratio", 0.0)))
+            if diagnostics.get("warnings"):
+                show_topmost_message(
+                    "Segmentation Diagnostics",
+                    "Segmentation completed with diagnostics:\n\n" +
+                    "\n".join(diagnostics["warnings"]),
+                    type="warning")
 
-        display.EraseAll()
-        colors = [
-            rgb_color(0.8, 0.8, 1.0), rgb_color(1.0, 0.8, 0.8),
-            rgb_color(0.8, 1.0, 0.8), rgb_color(1.0, 1.0, 0.8),
-        ]
-        for i, face in enumerate(state.current_faces):
-            display.DisplayShape(face, color=colors[i % len(colors)])
-        display.FitAll()
-        print("Segmentation complete: {} patches (u={}, v={})".format(len(faces), u, v))
-        _update_workflow("Face segmentation complete: {} patches".format(len(faces)))
+        def on_error(error_text):
+            print("Error segmenting faces: {}".format(error_text))
+            show_topmost_message("Error", "Face segmentation failed:\n{}".format(error_text), type="error")
+
+        set_status_message("Face segmentation running in background")
+        run_background_task("Segment Faces", "Splitting CAD faces...",
+                            lambda: segment_model(shape_to_segment, u, v,
+                                                  return_diagnostics=True),
+                            on_success, on_error)
     except Exception as e:
         print("Error segmenting faces: {}".format(str(e)))
         traceback.print_exc()
@@ -964,7 +971,193 @@ def export_path_to_csv(event=None):
 
 
 # ---------------------------------------------------------------------------
-# 12. Toggle / layer handlers
+# 12. Constrained speed planning and RoboDK integration
+# ---------------------------------------------------------------------------
+
+def load_scanner_tool_extrinsic(event=None):
+    file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+        get_main_window(), "Load Scanner-to-Tool Extrinsic", "calibration",
+        "JSON Files (*.json);;All Files (*)")
+    if not file_path:
+        return
+    try:
+        config = load_extrinsic_config(file_path)
+        state.extrinsic_config = config
+        state.extrinsic_config_path = file_path
+        with open(file_path, "rb") as stream:
+            state.extrinsic_config_sha256 = hashlib.sha256(stream.read()).hexdigest()
+        state.speed_plan_result = None
+        state.last_speed_csv_path = ""
+        state.last_robodk_import.clear()
+        message = ("Loaded extrinsic {}: status={}, T_tool_scanner, validated={}"
+                   .format(config.config_id, config.calibration_status, config.validated))
+        _update_workflow(message)
+        show_topmost_message(
+            "Scanner-to-Tool Extrinsic",
+            message + ("\n\nRoboDK import is enabled for this calibration."
+                       if config.validated else
+                       "\n\nThis configuration is not validated. Planning/export are allowed, "
+                       "but RoboDK import remains blocked."),
+            type="info" if config.validated else "warning")
+    except Exception as e:
+        show_topmost_message("Error", "Invalid extrinsic configuration:\n{}".format(e),
+                             type="error")
+
+
+def clear_scanner_tool_extrinsic(event=None):
+    state.extrinsic_config = None
+    state.extrinsic_config_path = ""
+    state.extrinsic_config_sha256 = ""
+    state.speed_plan_result = None
+    state.last_speed_csv_path = ""
+    state.last_robodk_import.clear()
+    _update_workflow("Scanner-to-tool extrinsic cleared; RoboDK import is blocked")
+    show_topmost_message(
+        "Scanner-to-Tool Extrinsic",
+        "Extrinsic cleared. Speed planning may still run on scanner poses for research, "
+        "but RoboDK import is blocked until a validated calibration is loaded.",
+        type="warning")
+
+
+def _ordered_pose_records():
+    if not state.optimal_viewpoints_with_pose:
+        raise ValueError("No path poses are available")
+    ordered = list(state.optimal_path) if state.optimal_path else list(range(len(state.optimal_viewpoints_with_pose)))
+    records = []
+    for order_index, viewpoint_index in enumerate(ordered, start=1):
+        if viewpoint_index < 0 or viewpoint_index >= len(state.optimal_viewpoints_with_pose):
+            raise IndexError("Path index out of range: {}".format(viewpoint_index))
+        point, pose = state.optimal_viewpoints_with_pose[viewpoint_index]
+        qw, qx, qy, qz = pose
+        records.append({
+            "index": order_index,
+            "x": point.X(), "y": point.Y(), "z": point.Z(),
+            "qw": qw, "qx": qx, "qy": qy, "qz": qz,
+        })
+    if state.extrinsic_config is not None:
+        command_records, metadata = transform_pose_records(records, state.extrinsic_config)
+        metadata["extrinsic_config_path"] = state.extrinsic_config_path
+        metadata["extrinsic_config_sha256"] = state.extrinsic_config_sha256
+        return command_records, metadata
+    return records, {
+        "extrinsic_applied": False,
+        "extrinsic_validated": False,
+        "extrinsic_config_id": "",
+        "calibration_status": "missing",
+        "source_pose_frame": "scanner",
+        "command_pose_frame": "scanner_untransformed",
+        "T_tool_scanner": None,
+        "extrinsic_config_path": "",
+        "extrinsic_config_sha256": "",
+        "source_pose_records": [dict(record) for record in records],
+    }
+
+
+def plan_path_speeds(event=None):
+    if not state.optimal_path or not state.optimal_viewpoints_with_pose:
+        show_topmost_message("Prompt", "Please complete path planning before speed planning")
+        return
+    settings = get_speed_planning_settings(get_main_window())
+    if not settings:
+        return
+    algorithm = settings.pop("algorithm")
+    try:
+        profile = ConstraintProfile(**settings)
+        records, pose_metadata = _ordered_pose_records()
+    except Exception as e:
+        show_topmost_message("Error", "Invalid speed planning input: {}".format(e), type="error")
+        return
+
+    def work():
+        result = plan_speed_profile(records, profile, algorithm)
+        result.diagnostics.update(pose_metadata)
+        if not pose_metadata["extrinsic_validated"]:
+            result.warnings.append(
+                "Scanner-to-tool extrinsic is missing or unvalidated; RoboDK import is blocked.")
+        return result
+
+    def on_success(result):
+        state.speed_plan_result = result
+        state.last_speed_csv_path = ""
+        state.last_robodk_import.clear()
+        message = ("Speed planning complete: {} poses, {:.3f} s, algorithm={}, feasible={}"
+                   .format(len(result.points), result.total_time, result.algorithm, result.feasible))
+        _update_workflow(message)
+        warning_text = "\n\n".join(result.warnings)
+        show_topmost_message("Speed Planning Complete", message + "\n\n" + warning_text,
+                             type="warning" if result.warnings else "info")
+
+    def on_error(error_text):
+        show_topmost_message("Error", "Speed planning failed:\n{}".format(error_text), type="error")
+
+    run_background_task("Speed Planning", "Optimizing speed at every ordered pose...",
+                        work,
+                        on_success, on_error)
+
+
+def export_speed_plan_to_csv(event=None):
+    if state.speed_plan_result is None:
+        show_topmost_message("Prompt", "Please run speed planning first")
+        return
+    file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        get_main_window(), "Save Pose + Speed CSV", "planned_pose_speed.csv",
+        "CSV Files (*.csv);;All Files (*)")
+    if not file_path:
+        return
+    try:
+        count = write_speed_plan_csv(file_path, state.speed_plan_result)
+        state.last_speed_csv_path = file_path
+        _update_workflow("Exported {} poses with speed parameters".format(count))
+        show_topmost_message(
+            "Success",
+            "Pose + speed CSV exported:\n{}\n\nMetadata sidecar:\n{}.metadata.json".format(
+                file_path, file_path))
+    except Exception as e:
+        show_topmost_message("Error", "Speed CSV export failed: {}".format(e), type="error")
+
+
+def import_speed_plan_to_robodk(event=None):
+    if state.speed_plan_result is None:
+        show_topmost_message("Prompt", "Please run speed planning first")
+        return
+    if not state.speed_plan_result.feasible:
+        show_topmost_message("Error", "Speed plan has constraint violations and cannot be imported", type="error")
+        return
+    if not state.speed_plan_result.diagnostics.get("extrinsic_validated", False):
+        show_topmost_message(
+            "Error",
+            "RoboDK import is blocked: load a scanner-to-tool calibration whose "
+            "calibration_status is validated, then rerun speed planning.",
+            type="error")
+        return
+    settings = get_robodk_import_settings(get_main_window())
+    if not settings:
+        return
+    if settings.get("replace"):
+        answer = show_topmost_message(
+            "Confirm Replace",
+            "RoboDK same-name generated program/targets will be deleted and rebuilt. Continue?",
+            type="question")
+        if answer != "yes":
+            return
+
+    def on_success(summary):
+        state.last_robodk_import = summary
+        message = ("RoboDK import complete: program={}, poses={}, instructions={}"
+                   .format(summary["program"], summary["pose_count"], summary["instruction_count"]))
+        _update_workflow(message)
+        show_topmost_message("RoboDK Import Complete", message)
+
+    def on_error(error_text):
+        show_topmost_message("Error", "RoboDK import failed:\n{}".format(error_text), type="error")
+
+    run_background_task("RoboDK Import", "Creating Set Speed -> Move instructions...",
+                        lambda: import_speed_plan(state.speed_plan_result, **settings),
+                        on_success, on_error)
+
+
+# ---------------------------------------------------------------------------
+# 13. Toggle / layer handlers
 # ---------------------------------------------------------------------------
 
 def _toggle_flag(flag_name, label, required_condition=True, prompt=None):
@@ -1047,8 +1240,10 @@ Usage Instructions:
   5. Click 'Collision Detection' menu for sensor and OBB operations
   6. Click 'View' menu to show/hide layers
   7. Click 'Path Planning' menu for sequential/greedy/ABC/MSCGA planning
-  8. Click 'Export' menu to save path points as CSV
-  9. Click 'Help' menu to show usage instructions again
+  8. Load a validated T_tool_scanner from 'Calibration' before production import
+  9. After path ordering, use 'Speed Planning' to plan constrained per-pose speeds
+ 10. Export Pose+Speed CSV or import Set Speed -> Move pairs to RoboDK
+ 11. Click 'Help' menu to show usage instructions again
 """
 
 
@@ -1103,9 +1298,21 @@ def run():
     add_function_to_menu("Path Planning", solve_with_abc_algorithm)
     add_function_to_menu("Path Planning", solve_with_mscga_algorithm)
 
+    # Speed Planning menu (must run after path ordering)
+    add_menu("Speed Planning")
+    add_function_to_menu("Speed Planning", plan_path_speeds)
+    add_function_to_menu("Speed Planning", export_speed_plan_to_csv)
+    add_function_to_menu("Speed Planning", import_speed_plan_to_robodk)
+
+    # Calibration menu. A validated T_tool_scanner is required for RoboDK import.
+    add_menu("Calibration")
+    add_function_to_menu("Calibration", load_scanner_tool_extrinsic)
+    add_function_to_menu("Calibration", clear_scanner_tool_extrinsic)
+
     # Export menu
     add_menu("Export")
     add_function_to_menu("Export", export_path_to_csv)
+    add_function_to_menu("Export", export_speed_plan_to_csv)
 
     # Help menu
     add_menu("Help")
