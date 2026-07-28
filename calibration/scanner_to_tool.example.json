@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "config_id": "EXAMPLE_IDENTITY_NOT_A_REAL_CALIBRATION",
+  "calibration_status": "example_only",
+  "source_pose_frame": "scanner",
+  "command_pose_frame": "tool",
+  "length_unit": "mm",
+  "quaternion_order": "wxyz",
+  "T_tool_scanner": [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "notes": "Format example only. Replace with a measured transform and set validated only after calibration verification."
+}
