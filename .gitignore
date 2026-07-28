@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.vscode/
+.idea/
+*.log
+DEBUG.txt
+session_log_*.md
+planned_pose_speed*.csv
+planned_pose_speed*.csv.metadata.json
+calibration/*.json
+!calibration/*.example.json
+archive/qwen/
+diagnostics/

@@ -2,6 +2,15 @@
 
 A research-oriented software framework for robotic scanning measurement path planning based on intelligent optimization algorithms.
 
+The current integrated branch adds constrained TCP speed planning,
+scanner-to-tool calibration handling, and RoboDK program generation. See the
+[documentation index](docs/README.md) for the runnable workflow, architecture,
+validation boundaries, and research plans.
+
+> **Scope note:** the software currently orders discrete path points and plans
+> speed along that path. Geometric path smoothing is documented as future work;
+> it is not yet implemented.
+
 ## Overview
 
 This repository focuses on robotic scanning measurement and path planning for free-form surface inspection scenarios. The project integrates viewpoint planning, path optimization, and intelligent evolutionary algorithms to improve scanning efficiency, trajectory smoothness, and measurement stability.
@@ -45,14 +54,19 @@ Traditional shortest-path optimization methods mainly focus on geometric distanc
 ```text
 Scanning-measurement-path-planning-software/
 │
-├── algorithm/          # Core optimization algorithms
-├── geometry/           # CAD and geometric processing modules
-├── gui/                # PyQt5 graphical user interface
-├── visualization/      # Visualization and rendering modules
-├── data/               # Experimental or simulation data
-├── results/            # Optimization results and evaluation outputs
-├── utils/              # Utility functions
-├── tests/              # Validation or testing scripts
+├── main.py                    # Desktop workflow and application entry
+├── geometry.py                # CAD geometry and segmentation
+├── viewpoints.py              # Viewpoint and pose generation
+├── planning.py                # Path-ordering algorithms
+├── speed_planning_core.py     # Constrained speed planning
+├── pose_transform.py          # Scanner/tool frame conversion
+├── robodk_bridge.py           # RoboDK program generation
+├── calibration/               # Versioned calibration example
+├── docs/                      # User, architecture, plan, and history docs
+├── diagnostics/               # Local-only historical diagnostics
+├── archive/                   # Local-only tool settings
+├── tests/                     # Automated validation
+├── run_integrated_app.ps1     # Existing-environment launcher
 └── README.md
 ```
 

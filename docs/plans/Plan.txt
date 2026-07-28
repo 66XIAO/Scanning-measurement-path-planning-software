@@ -1,0 +1,176 @@
+# Software_optimizing 后续修改计划
+
+## Summary
+
+目标是在 `D:\Pycharm files\Path Planning Software\Software_optimizing` 中，把当前单文件优化版逐步整理成可维护、可测试、可扩展的工程版本，同时保持现有 pythonOCC/PyQt5 主流程可运行。
+
+当前状态已确认：
+
+- 当前文件：`software3_16_En_optimized.py`
+- 当前说明：[`OPTIMIZATION_NOTES.md`](../architecture/OPTIMIZATION_NOTES.md)
+- 只读语法检查：`compile(..., "exec")` 通过
+- `py_compile` 在该目录下因 `__pycache__` 写入权限失败，后续语法检查使用只读 `compile()` 或修复缓存目录权限
+
+## Key Changes
+
+### 1. 架构重构
+
+保留 `software3_16_En_optimized.py` 作为兼容启动入口，新增模块化结构：
+
+- `main.py`：程序入口，初始化 OCC viewer、菜单、dock panel、事件循环
+- `state.py`：集中管理状态，替代全局变量
+- `config.py`：默认参数和常量
+- `geometry.py`：曲面法向、分割、中心点、OBB 几何
+- `viewpoints.py`：中心视点、候选视点、姿态四元数
+- `collision.py`：sensor volume、OBB 碰撞检测
+- `planning.py`：距离矩阵、顺序路径、贪心路径、ABC 调用
+- `renderer.py`：统一 `render_scene()` 和 layer 渲染
+- `ui_panels.py`：Workflow、Layers、参数 dialog、日志面板
+- `workers.py`：后台任务、进度弹窗、任务完成回调
+
+`software3_16_En_optimized.py` 最终只保留：
+
+```python
+from main import run
+
+if __name__ == "__main__":
+    run()
+```
+
+### 2. 状态和方法调用
+
+新增核心数据结构：
+
+- `AppState`
+  - model: 当前模型
+  - selected_face: 当前选中 face
+  - faces, centers, normals
+  - center_viewpoints, candidate_viewpoints, optimal_viewpoints
+  - sensor_volumes, face_obbs
+  - optimal_path, last_path_length
+  - visibility flags
+  - process flags
+
+- `ViewpointRecord`
+  - `point`
+  - `pose`
+  - `face_index`
+  - `kind`: `center/candidate/optimal`
+  - `valid`
+  - `collision`
+
+- `SensorConfig`
+  - `width`
+  - `height`
+  - `depth`
+
+所有 UI 事件统一改为：
+
+`UI action -> AppController method -> algorithm module -> AppState update -> Renderer.render_scene() -> UI status update`
+
+不再允许 UI 函数直接散落修改多个全局变量。
+
+### 3. 功能实现优化
+
+保留现有算法行为，优先修结构和稳定性：
+
+- 分割后调用 `state.invalidate_after_segmentation()`，清理旧中心点、视点、碰撞、路径
+- 导入模型后调用 `state.reset_all()`
+- 修改 sensor 参数后只清理 sensor volume 和 collision result，不清理模型和视点
+- 修改候选视点参数后清理 candidate、optimal、path、collision
+- `filter_optimal_viewpoints()` 改为按 `face_index` 精确取候选点，不再靠距离阈值反推归属
+- CSV 导出只接受 `optimal_viewpoints_with_pose` 或 `optimal_path`，导出前校验数量一致
+- ABC 参数移动到 `config.py`，UI 中提供高级参数区域，但默认值保持当前版本
+
+### 4. UI 设计优化
+
+保留菜单，但新增主工作区流程化控制：
+
+- 左侧 `Workflow` 面板增加步骤按钮：
+  - Import Model
+  - Select Face
+  - Segment
+  - Compute Centers
+  - Generate Viewpoints
+  - Filter Viewpoints
+  - Create Sensor Volumes
+  - Generate OBB
+  - Collision Check
+  - Path Planning
+  - Export CSV
+
+- 每个步骤显示状态：
+  - Not ready
+  - Ready
+  - Running
+  - Done
+  - Error
+
+- 菜单和按钮根据 `AppState` 自动启用/禁用，减少 “Please do X first” 弹窗
+- `Layers` 面板继续使用 checkbox 控制模型、中心点、法线、视点、路径、OBB、sensor volume
+- 新增底部日志面板，替代大部分 `print`
+- 普通成功信息写入状态栏和日志；只保留错误、清空、退出、关键确认弹窗
+- 参数输入统一使用 dialog：
+  - Segmentation dialog: U, V, expected patch count
+  - Sensor dialog: width, height, depth
+  - Path planning dialog: Sequential / Greedy / ABC + advanced ABC parameters
+
+### 5. 后台任务和进度
+
+`workers.py` 提供统一任务接口：
+
+- `TaskRunner.run(title, message, work_fn, success_fn, error_fn)`
+- 所有 OCC viewer 绘制必须在主线程执行
+- ABC 路径规划继续后台执行
+- 碰撞检测可后台执行，但只计算数据，不直接调用 `display`
+- 分割暂时保留主线程执行，并显示 modal progress；只有确认 pythonOCC BOP 分割在当前环境线程安全后，再迁移到 worker
+
+## Test Plan
+
+### Static Checks
+
+- 使用只读语法检查：
+  - `py -c "import pathlib; p=pathlib.Path('software3_16_En_optimized.py'); compile(p.read_text(encoding='utf-8'), str(p), 'exec')"`
+- 对拆分后的所有 `.py` 文件执行同类 `compile()` 检查
+- 禁止使用 Python 3.9+ 语法，保持 Python 3.7 兼容
+
+### Unit-Level Tests
+
+使用标准库 `unittest`，避免引入新依赖：
+
+- `planning`:
+  - 距离矩阵对称
+  - 顺序路径长度正确
+  - 贪心路径覆盖所有点且不重复
+- `state`:
+  - 导入模型 reset 清理所有旧状态
+  - 分割后清理 downstream 数据
+  - sensor 参数变化只清理 sensor/collision
+- `viewpoints`:
+  - 每个 face 生成 1 个 center viewpoint + 6 个 candidate viewpoints
+  - `face_index` 映射正确
+- `export`:
+  - sequential path 导出顺序正确
+  - greedy/ABC path 按 `optimal_path` 顺序导出
+  - 不重复写行
+
+### Manual GUI Scenarios
+
+- 启动程序，确认 Workflow/Layers/日志面板显示
+- 导入 STEP/IGES 模型，确认按钮状态变化
+- 全模型分割和单面分割各测试一次
+- 生成中心点、候选视点、最优视点，确认数量显示正确
+- 切换所有 layer checkbox，确认无重复对象残留
+- 创建 sensor volume、生成 OBB、执行碰撞检测
+- 顺序、贪心、ABC 三种路径规划都能显示路径和长度
+- CSV 导出后检查行数、顺序、字段
+- Clear Model 后确认 viewer、状态、图层和缓存全部清空
+
+## Assumptions
+
+- 后续修改只发生在 `Software_optimizing` 目录，不修改原始 `software3_16_En.py`
+- 保持当前英文 UI 文案，因为目标文件是 `_En.py`
+- 保持 Python 3.7 兼容
+- 保持 pythonOCC/PyQt5 技术栈，不引入新的 GUI 框架
+- 第一阶段不改变核心算法结果，只修复状态管理、调用结构和 UI 交互
+- 分割和 OCC 渲染相关操作优先保持主线程，避免不确定的 OCC 线程安全问题
