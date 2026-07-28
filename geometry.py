@@ -4,6 +4,7 @@ All functions in this module are *pure* or receive the OCC viewer (``display``)
 as an explicit parameter so that no global state is required.
 """
 
+from dataclasses import asdict, dataclass, field
 import math
 from OCC.Core.gp import gp_Pnt, gp_Vec, gp_Dir, gp_Ax1, gp_Ax2, gp_Ax3, gp_Trsf, gp_XYZ
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
@@ -269,7 +270,32 @@ def generate_face_obb(face):
 # Surface segmentation
 # ---------------------------------------------------------------------------
 
-def segment_model(shape, u=6, v=4):
+
+@dataclass
+class SegmentationDiagnostics:
+    strategy: str = "equal_param"
+    original_face_count: int = 0
+    patch_count: int = 0
+    original_area: float = 0.0
+    patch_area_sum: float = 0.0
+    area_ratio: float = 1.0
+    split_attempts: int = 0
+    effective_splits: int = 0
+    split_no_effect: int = 0
+    split_exceptions: int = 0
+    area_rejected_splits: int = 0
+    fallback_faces: int = 0
+    periodic_faces: int = 0
+    warnings: list = field(default_factory=list)
+
+
+def _surface_area(shape):
+    props = GProp_GProps()
+    brepgprop.SurfaceProperties(shape, props)
+    return float(props.Mass())
+
+
+def segment_model(shape, u=6, v=4, return_diagnostics=False, area_tolerance=0.01):
     """Segment *shape* into ``u * v`` patches per original face.
 
     Uses iso-parametric lines (``ShapeAnalysis_Surface``) and
@@ -277,18 +303,30 @@ def segment_model(shape, u=6, v=4):
 
     Returns
     -------
-    list of TopoDS_Face
+    list of TopoDS_Face, or ``(patches, diagnostics_dict)`` when
+    ``return_diagnostics`` is true.
     """
     try:
+        diagnostics = SegmentationDiagnostics()
         patches = []
         exp = TopExp_Explorer(shape, TopAbs_FACE)
         while exp.More():
             face = exp.Current()
+            diagnostics.original_face_count += 1
             try:
-                face_patches = _segment_single_face(face, u, v)
+                diagnostics.original_area += _surface_area(face)
+                adaptor = BRepAdaptor_Surface(face)
+                if adaptor.IsUPeriodic() or adaptor.IsVPeriodic():
+                    diagnostics.periodic_faces += 1
+            except Exception as e:
+                diagnostics.warnings.append("Could not inspect face {}: {}".format(
+                    diagnostics.original_face_count, e))
+            try:
+                face_patches = _segment_single_face(face, u, v, diagnostics)
                 patches.extend(face_patches)
             except Exception as e:
                 print("Error splitting single face: {}".format(str(e)))
+                diagnostics.fallback_faces += 1
                 patches.append(face)
             exp.Next()
 
@@ -298,8 +336,40 @@ def segment_model(shape, u=6, v=4):
                 patches.append(exp.Current())
                 exp.Next()
 
-        print("Model segmentation complete, total {} patches (u={}, v={})".format(
-            len(patches), u, v))
+        diagnostics.patch_count = len(patches)
+        for patch in patches:
+            try:
+                diagnostics.patch_area_sum += _surface_area(patch)
+            except Exception as e:
+                diagnostics.warnings.append("Could not calculate patch area: {}".format(e))
+        if diagnostics.original_area > 1e-12:
+            diagnostics.area_ratio = diagnostics.patch_area_sum / diagnostics.original_area
+            if abs(diagnostics.area_ratio - 1.0) > area_tolerance:
+                diagnostics.warnings.append(
+                    "Area conservation failed: patch/original={:.6f} (tolerance={:.3%})".format(
+                        diagnostics.area_ratio, area_tolerance))
+        else:
+            diagnostics.area_ratio = 0.0
+            diagnostics.warnings.append("Original surface area is zero or unavailable")
+        if diagnostics.split_exceptions:
+            diagnostics.warnings.append("{} iso split operations raised exceptions".format(
+                diagnostics.split_exceptions))
+        if diagnostics.area_rejected_splits:
+            diagnostics.warnings.append(
+                "{} iso split operations were rejected because their areas did not conserve".format(
+                    diagnostics.area_rejected_splits))
+        if diagnostics.fallback_faces:
+            diagnostics.warnings.append("{} original faces used fallback output".format(
+                diagnostics.fallback_faces))
+        if diagnostics.periodic_faces:
+            diagnostics.warnings.append(
+                "{} periodic faces detected; inspect seam-adjacent patches".format(
+                    diagnostics.periodic_faces))
+
+        print("Model segmentation complete, total {} patches (u={}, v={}), area ratio {:.6f}".format(
+            len(patches), u, v, diagnostics.area_ratio))
+        if return_diagnostics:
+            return patches, asdict(diagnostics)
         return patches
     except Exception as e:
         print("Error segmenting model: {}".format(str(e)))
@@ -308,7 +378,7 @@ def segment_model(shape, u=6, v=4):
         return []
 
 
-def _segment_single_face(face, u, v):
+def _segment_single_face(face, u, v, diagnostics=None):
     """Segment one face into u*v patches."""
     surf = BRep_Tool.Surface(face)
     adaptor = BRepAdaptor_Surface(face)
@@ -333,7 +403,8 @@ def _segment_single_face(face, u, v):
             any_split = False
             for vf in v_faces:
                 v_pos = v_min + (v_max - v_min) * (level + 1) / v
-                result = _split_face_iso(sas, vf, v_pos, axis="v")
+                result = _split_face_iso(sas, vf, v_pos, axis="v",
+                                         diagnostics=diagnostics)
                 if len(result) >= 2:
                     new_v.extend(result)
                     any_split = True
@@ -354,7 +425,8 @@ def _segment_single_face(face, u, v):
                 any_split = False
                 for uf in u_faces:
                     u_pos = u_min + (u_max - u_min) * (level + 1) / u
-                    result = _split_face_iso(sas, uf, u_pos, axis="u")
+                    result = _split_face_iso(sas, uf, u_pos, axis="u",
+                                             diagnostics=diagnostics)
                     if len(result) >= 2:
                         new_u.extend(result)
                         any_split = True
@@ -371,8 +443,10 @@ def _segment_single_face(face, u, v):
     return patches
 
 
-def _split_face_iso(sas, face, param, axis="u"):
+def _split_face_iso(sas, face, param, axis="u", diagnostics=None):
     """Split *face* along one iso-parametric line."""
+    if diagnostics is not None:
+        diagnostics.split_attempts += 1
     try:
         if axis == "u":
             iso = sas.UIso(param)
@@ -385,8 +459,24 @@ def _split_face_iso(sas, face, param, axis="u"):
         splitter.AddTool(edge)
         splitter.Perform()
 
-        return _collect_faces(splitter.Shape())
+        faces = _collect_faces(splitter.Shape())
+        if len(faces) >= 2:
+            input_area = _surface_area(face)
+            output_area = sum(_surface_area(result_face) for result_face in faces)
+            relative_error = abs(output_area - input_area) / max(input_area, 1e-12)
+            if relative_error > 1e-6:
+                if diagnostics is not None:
+                    diagnostics.area_rejected_splits += 1
+                return [face]
+        if diagnostics is not None:
+            if len(faces) >= 2:
+                diagnostics.effective_splits += 1
+            else:
+                diagnostics.split_no_effect += 1
+        return faces or [face]
     except Exception:
+        if diagnostics is not None:
+            diagnostics.split_exceptions += 1
         return [face]
 
 
