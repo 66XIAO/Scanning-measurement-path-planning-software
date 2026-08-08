@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 
 from pose_transform import (
-    parse_extrinsic_config, pose_matrix, transform_pose_records,
+    load_extrinsic_config, parse_extrinsic_config, pose_matrix, transform_pose_records,
     transform_scanner_pose_to_tool,
 )
 from export_utils import write_speed_plan_csv
@@ -17,9 +17,10 @@ from speed_planning_core import plan_speed_profile
 
 def config_data(matrix=None, status="validated"):
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "config_id": "test_calibration",
         "calibration_status": status,
+        "mapping_mode": "separate_tool_frame",
         "source_pose_frame": "scanner",
         "command_pose_frame": "tool",
         "length_unit": "mm",
@@ -34,6 +35,16 @@ def pose(z=500.0):
 
 
 class PoseTransformTests(unittest.TestCase):
+    def test_shipped_robodk_station_config(self):
+        path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "calibration",
+            "robodk_ur10_creaform_station.json"))
+        config = load_extrinsic_config(path)
+        self.assertEqual(config.mapping_mode, "robodk_tcp_is_scanner")
+        self.assertEqual(config.robodk_tool_name, "Creaform MetraSCAN")
+        self.assertTrue(config.validated)
+        self.assertFalse(config.physically_validated)
+
     def test_identity_extrinsic_preserves_pose(self):
         config = parse_extrinsic_config(config_data())
         command = transform_scanner_pose_to_tool(pose(), config)
@@ -73,6 +84,26 @@ class PoseTransformTests(unittest.TestCase):
         self.assertFalse(metadata["extrinsic_validated"])
         self.assertEqual(metadata["source_pose_records"][0], pose())
         self.assertEqual(len(commands), 1)
+
+    def test_robodk_scanner_tcp_mode_does_not_double_transform(self):
+        data = config_data(status="station_verified")
+        data.update({
+            "mapping_mode": "robodk_tcp_is_scanner",
+            "command_pose_frame": "scanner_tcp",
+            "T_tool_scanner": None,
+            "T_flange_scanner": [
+                [0, 0, 1, 90], [0, 1, 0, 0], [-1, 0, 0, 300], [0, 0, 0, 1]],
+            "robodk_station_name": "UR10_小曲面_test",
+            "robodk_robot_name": "UR10",
+            "robodk_tool_name": "Creaform MetraSCAN",
+        })
+        config = parse_extrinsic_config(data)
+        commands, metadata = transform_pose_records([pose()], config)
+        np.testing.assert_allclose(pose_matrix(commands[0]), pose_matrix(pose()), atol=1e-9)
+        self.assertFalse(metadata["extrinsic_applied"])
+        self.assertTrue(metadata["extrinsic_validated"])
+        self.assertFalse(metadata["physical_calibration_validated"])
+        self.assertEqual(metadata["command_pose_frame"], "scanner_tcp")
 
     def test_csv_preserves_source_and_command_pose_with_metadata(self):
         matrix = np.eye(4)

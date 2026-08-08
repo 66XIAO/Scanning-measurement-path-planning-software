@@ -5,6 +5,7 @@ try:
     from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
     from OCC.Core.gp import gp_Ax2, gp_Dir, gp_Pnt
     from geometry import segment_model
+    from cad_io import combine_shapes
     OCC_AVAILABLE = True
 except ImportError:
     OCC_AVAILABLE = False
@@ -12,6 +13,15 @@ except ImportError:
 
 @unittest.skipUnless(OCC_AVAILABLE, "pythonOCC is not available in this test environment")
 class SegmentationDiagnosticsTests(unittest.TestCase):
+    def test_multiple_reader_roots_are_combined(self):
+        first = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+        second = BRepPrimAPI_MakeBox(5.0, 5.0, 5.0).Shape()
+        compound = combine_shapes([first, second])
+        patches, diagnostics = segment_model(
+            compound, 1, 1, return_diagnostics=True)
+        self.assertEqual(diagnostics["original_face_count"], 12)
+        self.assertEqual(len(patches), 12)
+
     def test_box_segmentation_preserves_area(self):
         shape = BRepPrimAPI_MakeBox(20.0, 15.0, 10.0).Shape()
         patches, diagnostics = segment_model(

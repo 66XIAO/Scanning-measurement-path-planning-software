@@ -77,6 +77,98 @@ def _safe_name(value):
     return cleaned or "SpeedPlan"
 
 
+def _matrix_rows(matrix):
+    return [[float(matrix[row, column]) for column in range(4)] for row in range(4)]
+
+
+def _tool_pose_errors(actual, expected):
+    translation_error = math.sqrt(sum(
+        (actual[row][3] - expected[row][3]) ** 2 for row in range(3)))
+    # R_delta = R_expected^T * R_actual; angle from its trace.
+    trace = 0.0
+    for row in range(3):
+        trace += sum(expected[k][row] * actual[k][row] for k in range(3))
+    cosine = max(-1.0, min(1.0, (trace - 1.0) / 2.0))
+    orientation_error = math.degrees(math.acos(cosine))
+    return translation_error, orientation_error
+
+
+def _verify_tool_mapping(rdk, robot, frame, tool, result,
+                         robot_name, frame_name, tool_name):
+    diagnostics = result.diagnostics
+    mode = diagnostics.get("tool_mapping_mode")
+    if mode not in ("robodk_tcp_is_scanner", "separate_tool_frame"):
+        raise ValueError("Speed plan is missing a recognised tool_mapping_mode")
+    expected_station = diagnostics.get("expected_robodk_station_name", "")
+    expected_robot = diagnostics.get("expected_robodk_robot_name", "")
+    expected_tool = diagnostics.get("expected_robodk_tool_name", "")
+    expected_frame = diagnostics.get("expected_robodk_frame_name", "")
+    station_name = rdk.ActiveStation().Name()
+    if expected_station and expected_station != station_name:
+        raise RuntimeError("RoboDK station mismatch: expected {}, got {}".format(
+            expected_station, station_name))
+    if expected_robot and expected_robot != robot_name:
+        raise RuntimeError("RoboDK robot mismatch: expected {}, got {}".format(
+            expected_robot, robot_name))
+    if expected_tool and expected_tool != tool_name:
+        raise RuntimeError("RoboDK tool mismatch: expected {}, got {}".format(
+            expected_tool, tool_name))
+    if expected_frame and expected_frame != frame_name:
+        raise RuntimeError("RoboDK frame mismatch: expected {}, got {}".format(
+            expected_frame, frame_name))
+
+    verification = {
+        "mapping_mode": mode,
+        "station": station_name,
+        "robot": robot.Name(),
+        "tool": tool.Name(),
+        "frame": frame.Name(),
+        "physical_calibration_validated": bool(
+            diagnostics.get("physical_calibration_validated", False)),
+    }
+    if mode == "robodk_tcp_is_scanner":
+        expected_matrix = diagnostics.get("T_flange_scanner")
+        if expected_matrix is None:
+            raise ValueError("T_flange_scanner is required for RoboDK scanner TCP mode")
+        actual_matrix = _matrix_rows(tool.PoseTool())
+        translation_error, orientation_error = _tool_pose_errors(
+            actual_matrix, expected_matrix)
+        position_tolerance = float(diagnostics.get("tool_position_tolerance_mm", 0.01))
+        orientation_tolerance = float(
+            diagnostics.get("tool_orientation_tolerance_deg", 0.01))
+        if translation_error > position_tolerance or orientation_error > orientation_tolerance:
+            raise RuntimeError(
+                "RoboDK scanner TCP mismatch: position {:.6f} mm (limit {:.6f}), "
+                "orientation {:.6f} deg (limit {:.6f})".format(
+                    translation_error, position_tolerance,
+                    orientation_error, orientation_tolerance))
+        verification.update({
+            "T_flange_scanner_actual": actual_matrix,
+            "position_error_mm": translation_error,
+            "orientation_error_deg": orientation_error,
+        })
+    expected_frame_matrix = diagnostics.get("T_station_reference_frame")
+    if expected_frame_matrix is not None:
+        actual_frame_matrix = _matrix_rows(frame.Pose())
+        frame_position_error, frame_orientation_error = _tool_pose_errors(
+            actual_frame_matrix, expected_frame_matrix)
+        position_tolerance = float(diagnostics.get("tool_position_tolerance_mm", 0.01))
+        orientation_tolerance = float(
+            diagnostics.get("tool_orientation_tolerance_deg", 0.01))
+        if (frame_position_error > position_tolerance or
+                frame_orientation_error > orientation_tolerance):
+            raise RuntimeError(
+                "RoboDK reference frame mismatch: position {:.6f} mm, "
+                "orientation {:.6f} deg".format(
+                    frame_position_error, frame_orientation_error))
+        verification.update({
+            "T_station_reference_frame_actual": actual_frame_matrix,
+            "frame_position_error_mm": frame_position_error,
+            "frame_orientation_error_deg": frame_orientation_error,
+        })
+    return verification
+
+
 def _delete_if_valid(item):
     if item is not None and item.Valid():
         item.Delete()
@@ -151,7 +243,7 @@ def import_speed_plan(result, robot_name="UR10", frame_name="Frame 2",
         raise ValueError("Speed plan contains constraint violations")
     if not result.diagnostics.get("extrinsic_validated", False):
         raise ValueError(
-            "RoboDK import requires a validated scanner-to-tool extrinsic calibration")
+            "RoboDK import requires a verified scanner TCP/tool mapping")
     if first_move not in ("movej", "movel"):
         raise ValueError("first_move must be movej or movel")
     for point in result.points:
@@ -163,6 +255,8 @@ def import_speed_plan(result, robot_name="UR10", frame_name="Frame 2",
     robot = _require_item(rdk, robot_name, api["ITEM_TYPE_ROBOT"], "robot")
     frame = _require_item(rdk, frame_name, api["ITEM_TYPE_FRAME"], "frame")
     tool = _require_item(rdk, tool_name, api["ITEM_TYPE_TOOL"], "tool")
+    tool_mapping_verification = _verify_tool_mapping(
+        rdk, robot, frame, tool, result, robot_name, frame_name, tool_name)
 
     namespace = target_namespace or (_safe_name(program_name) + "_")
     target_names = [namespace + "P{}".format(i + 1) for i in range(len(result.points))]
@@ -182,6 +276,8 @@ def import_speed_plan(result, robot_name="UR10", frame_name="Frame 2",
     program.setFrame(frame)
     program.setTool(tool)
     created = []
+    backup_items = []
+    committed = False
     rdk.Render(False)
     try:
         for i, (point, name) in enumerate(zip(result.points, temp_target_names)):
@@ -199,20 +295,38 @@ def import_speed_plan(result, robot_name="UR10", frame_name="Frame 2",
             program, result.points)
 
         # Commit only after the temporary program is complete and validated.
+        # Existing items are renamed to unique backups first so a rename/commit
+        # failure can restore them instead of destroying the previous program.
         if existing_program.Valid():
-            existing_program.Delete()
+            original_name = existing_program.Name()
+            existing_program.setName("{}__backup_{}".format(original_name, token))
+            backup_items.append((existing_program, original_name))
         for target in existing_targets:
-            _delete_if_valid(target)
+            original_name = target.Name()
+            target.setName("{}__backup_{}".format(original_name, token))
+            backup_items.append((target, original_name))
         program.setName(program_name)
         for target, final_name in zip(created, target_names):
             target.setName(final_name)
+        committed = True
     except Exception:
         _delete_if_valid(program)
         for target in created:
             _delete_if_valid(target)
+        for backup, original_name in reversed(backup_items):
+            if backup.Valid():
+                backup.setName(original_name)
         raise
     finally:
         rdk.Render(True)
+
+    backup_cleanup_warnings = []
+    for backup, original_name in backup_items:
+        try:
+            _delete_if_valid(backup)
+        except Exception as exc:
+            backup_cleanup_warnings.append(
+                "Could not delete backup for {}: {}".format(original_name, exc))
 
     program.ShowInstructions(True)
     return {
@@ -225,4 +339,7 @@ def import_speed_plan(result, robot_name="UR10", frame_name="Frame 2",
         "expected_speed_commands": expected_commands,
         "parameter_readback_supported": parameter_readback is not None,
         "parameter_readback": parameter_readback,
+        "tool_mapping_verification": tool_mapping_verification,
+        "replace_committed": committed,
+        "backup_cleanup_warnings": backup_cleanup_warnings,
     }

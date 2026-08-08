@@ -393,7 +393,7 @@ def _build_result(algorithm, samples, ds, path_s, curvature, orientation_delta,
     warnings = [
         "Joint velocity, joint acceleration and torque limits are not yet validated; "
         "run RoboDK/robot validation before production execution.",
-        "Input pose is treated as commanded tool pose. Configure scanner-to-tool extrinsics explicitly.",
+        "Pose-frame semantics are supplied by the integration layer; verify scanner TCP/tool mapping before execution.",
     ]
     diag = dict(diagnostics or {})
     diag.update({

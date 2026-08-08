@@ -14,7 +14,6 @@ import traceback
 
 import numpy as np
 
-from OCC.Extend.DataExchange import read_step_file, read_iges_file
 from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
 from OCC.Core.gp import gp_Pnt, gp_Vec
@@ -55,6 +54,7 @@ from speed_planning_core import ConstraintProfile, plan_speed_profile
 from speed_planning_ui import get_speed_planning_settings, get_robodk_import_settings
 from robodk_bridge import import_speed_plan
 from pose_transform import load_extrinsic_config, transform_pose_records
+from cad_io import load_cad_shape
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +253,7 @@ def import_model(event=None):
         return
 
     def load_shape():
-        if ext in ('.step', '.stp'):
-            return read_step_file(file_path)
-        return read_iges_file(file_path)
+        return load_cad_shape(file_path)
 
     def on_success(new_shape):
         global path_planning_prompt_confirmed
@@ -989,16 +987,23 @@ def load_scanner_tool_extrinsic(event=None):
         state.speed_plan_result = None
         state.last_speed_csv_path = ""
         state.last_robodk_import.clear()
-        message = ("Loaded extrinsic {}: status={}, T_tool_scanner, validated={}"
-                   .format(config.config_id, config.calibration_status, config.validated))
+        relationship = ("T_flange_scanner (RoboDK TCP is scanner)"
+                        if config.mapping_mode == "robodk_tcp_is_scanner"
+                        else "T_tool_scanner (separate command tool)")
+        message = ("Loaded tool mapping {}: status={}, mode={}, {}"
+                   .format(config.config_id, config.calibration_status,
+                           config.mapping_mode, relationship))
         _update_workflow(message)
         show_topmost_message(
             "Scanner-to-Tool Extrinsic",
-            message + ("\n\nRoboDK import is enabled for this calibration."
-                       if config.validated else
+            message + ("\n\nRoboDK simulation import is enabled. Physical mounting "
+                       "validation is still required before production execution."
+                       if config.validated and not config.physically_validated else
+                       "\n\nRoboDK import is enabled for this physically validated calibration."
+                       if config.physically_validated else
                        "\n\nThis configuration is not validated. Planning/export are allowed, "
                        "but RoboDK import remains blocked."),
-            type="info" if config.validated else "warning")
+            type="info" if config.physically_validated else "warning")
     except Exception as e:
         show_topmost_message("Error", "Invalid extrinsic configuration:\n{}".format(e),
                              type="error")
@@ -1074,6 +1079,10 @@ def plan_path_speeds(event=None):
         if not pose_metadata["extrinsic_validated"]:
             result.warnings.append(
                 "Scanner-to-tool extrinsic is missing or unvalidated; RoboDK import is blocked.")
+        elif not pose_metadata.get("physical_calibration_validated", False):
+            result.warnings.append(
+                "RoboDK station TCP mapping is verified, but the physical scanner mounting "
+                "has not been independently calibrated; use for simulation validation only.")
         return result
 
     def on_success(result):
