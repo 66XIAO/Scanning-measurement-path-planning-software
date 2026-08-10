@@ -85,6 +85,20 @@ class PoseTransformTests(unittest.TestCase):
         self.assertEqual(metadata["source_pose_records"][0], pose())
         self.assertEqual(len(commands), 1)
 
+    def test_separate_flange_tool_is_optional_for_planning_and_preserved(self):
+        legacy = parse_extrinsic_config(config_data())
+        commands, legacy_metadata = transform_pose_records([pose()], legacy)
+        self.assertEqual(len(commands), 1)
+        self.assertIsNone(legacy.t_flange_tool)
+        self.assertIsNone(legacy_metadata["T_flange_tool"])
+
+        data = config_data()
+        data["T_flange_tool"] = np.eye(4).tolist()
+        config = parse_extrinsic_config(data)
+        _commands, metadata = transform_pose_records([pose()], config)
+        self.assertEqual(config.to_dict()["T_flange_tool"], np.eye(4).tolist())
+        self.assertEqual(metadata["T_flange_tool"], np.eye(4).tolist())
+
     def test_robodk_scanner_tcp_mode_does_not_double_transform(self):
         data = config_data(status="station_verified")
         data.update({

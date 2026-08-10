@@ -5,6 +5,15 @@ VIEWPOINT_DISTANCE = 300.0
 NUM_CANDIDATES_PER_FACE = 6
 ZENITH_ANGLE_DEG = 10.0
 
+# CarDoor0808 scanner-coverage profile.  The referenced scanner note gives a
+# 130 x 120 mm theoretical footprint and half-grid edge margins of 15 / 8.5 mm.
+# Because the text does not identify which margin belongs to which footprint
+# axis, 100 x 90 mm is the conservative cell limit valid for either mapping.
+SCANNER_SAFE_PATCH_X_MM = 100.0
+SCANNER_SAFE_PATCH_Y_MM = 90.0
+DEFAULT_SEGMENT_U = 9
+DEFAULT_SEGMENT_V = 11
+
 
 @dataclass
 class ABCConfig:

@@ -47,6 +47,9 @@ Traditional shortest-path optimization methods mainly focus on geometric distanc
 - CAD-based geometric processing
 - PythonOCC geometric modeling and visualization
 - PyQt5 graphical user interface
+- STEP/IGES drag-and-drop model import
+- JSON-driven English/Simplified Chinese UI switching
+- Pose-only planned-path import to RoboDK before speed planning
 - Research-oriented experimental framework
 
 ## Repository Structure

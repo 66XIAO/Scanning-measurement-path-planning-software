@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from geometry import calculate_face_normal, display_coordinate_system, ConvertBndToShape
 from config import NUM_CANDIDATES_PER_FACE
+from surface_segmentation import is_surface_patch
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +73,17 @@ def render_scene(display, vis, current_shape, current_faces,
                     rgb_color(0.8, 1.0, 0.8),
                     rgb_color(1.0, 1.0, 0.8),
                 ]
-                for i, face in enumerate(current_faces):
-                    display.DisplayShape(face, color=colors[i % len(colors)], update=False)
+                if any(is_surface_patch(face) for face in current_faces):
+                    display.DisplayShape(
+                        current_shape, color=rgb_color(0.7, 0.7, 0.7),
+                        transparency=0.35, update=False)
+                    for i, patch in enumerate(current_faces):
+                        if is_surface_patch(patch):
+                            display.DisplayShape(
+                                patch.center, color=colors[i % len(colors)], update=False)
+                else:
+                    for i, face in enumerate(current_faces):
+                        display.DisplayShape(face, color=colors[i % len(colors)], update=False)
             else:
                 display.DisplayShape(current_shape, color=rgb_color(0.7, 0.7, 0.7), update=False)
 

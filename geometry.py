@@ -24,6 +24,12 @@ from OCC.Core.Geom import Geom_Axis2Placement
 from OCC.Core.AIS import AIS_Trihedron
 from OCC.Display.OCCViewer import rgb_color
 
+from surface_segmentation import (
+    inspect_shape_topology,
+    is_surface_patch,
+    segment_shape_mesh_grid,
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -53,6 +59,9 @@ def calculate_face_normal(face, reference_normal=None):
     -------
     gp_Vec
     """
+    if is_surface_patch(face):
+        normal = gp_Vec(face.normal.X(), face.normal.Y(), face.normal.Z())
+        return _align_normal(normal, reference_normal)
     try:
         adaptor = BRepAdaptor_Surface(face)
 
@@ -253,6 +262,21 @@ def generate_face_obb(face):
     -------
     (obb, obb_shape, obb_color) or (None, None, None)
     """
+    if is_surface_patch(face):
+        try:
+            xmin, ymin, zmin, xmax, ymax, zmax = face.bounds
+            obb = Bnd_OBB()
+            obb.SetCenter(gp_Pnt(
+                (xmin + xmax) / 2.0,
+                (ymin + ymax) / 2.0,
+                (zmin + zmax) / 2.0))
+            obb.SetXComponent(gp_Dir(1, 0, 0), max((xmax - xmin) / 2.0, 1e-6))
+            obb.SetYComponent(gp_Dir(0, 1, 0), max((ymax - ymin) / 2.0, 1e-6))
+            obb.SetZComponent(gp_Dir(0, 0, 1), max((zmax - zmin) / 2.0, 1e-6))
+            return obb, ConvertBndToShape(obb), rgb_color(0, 0, 1)
+        except Exception as e:
+            print("Error generating mesh-grid patch OBB: {}".format(str(e)))
+            return None, None, None
     try:
         obb = Bnd_OBB()
         brepbndlib_AddOBB(face, obb)
@@ -295,7 +319,9 @@ def _surface_area(shape):
     return float(props.Mass())
 
 
-def segment_model(shape, u=6, v=4, return_diagnostics=False, area_tolerance=0.01):
+def segment_model(shape, u=6, v=4, return_diagnostics=False, area_tolerance=0.01,
+                  strategy="equal_param", mesh_linear_deflection=None,
+                  mesh_angular_deflection=0.5):
     """Segment *shape* into ``u * v`` patches per original face.
 
     Uses iso-parametric lines (``ShapeAnalysis_Surface``) and
@@ -306,6 +332,24 @@ def segment_model(shape, u=6, v=4, return_diagnostics=False, area_tolerance=0.01
     list of TopoDS_Face, or ``(patches, diagnostics_dict)`` when
     ``return_diagnostics`` is true.
     """
+    requested_strategy = strategy
+    if strategy == "auto":
+        topology = inspect_shape_topology(shape)
+        strategy = "mesh_grid" if topology["has_trimmed_faces"] else "equal_param"
+    if strategy == "mesh_grid":
+        patches, diagnostics = segment_shape_mesh_grid(
+            shape, u, v,
+            linear_deflection=mesh_linear_deflection,
+            angular_deflection=mesh_angular_deflection,
+            area_tolerance=max(area_tolerance, 0.02))
+        if requested_strategy == "mesh_grid":
+            diagnostics["strategy_reason"] = "explicit_request"
+        if return_diagnostics:
+            return patches, diagnostics
+        return patches
+    if strategy != "equal_param":
+        raise ValueError("Unsupported segmentation strategy: {}".format(strategy))
+
     try:
         diagnostics = SegmentationDiagnostics()
         patches = []
@@ -369,7 +413,10 @@ def segment_model(shape, u=6, v=4, return_diagnostics=False, area_tolerance=0.01
         print("Model segmentation complete, total {} patches (u={}, v={}), area ratio {:.6f}".format(
             len(patches), u, v, diagnostics.area_ratio))
         if return_diagnostics:
-            return patches, asdict(diagnostics)
+            result = asdict(diagnostics)
+            if requested_strategy == "auto":
+                result["strategy_reason"] = "untrimmed_faces"
+            return patches, result
         return patches
     except Exception as e:
         print("Error segmenting model: {}".format(str(e)))

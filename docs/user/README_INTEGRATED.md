@@ -5,22 +5,61 @@ post-path constrained speed planning and RoboDK program generation.
 
 ## Workflow
 
-1. Import STEP/IGES model.
+1. Import a STEP/IGES model from **File**, or drag one model file directly onto
+   the 3D viewer.
 2. Segment CAD faces and compute face centers/normals.
 3. Generate/filter scanner viewpoints and order the measurement path.
-4. Load a validated `T_tool_scanner` from the **Calibration** menu.
-5. Open **Speed Planning -> plan_path_speeds**.
-6. Choose the deterministic baseline or thesis-style Double Q mode.
-7. Export Pose+Speed CSV or import directly to RoboDK.
+4. Load a validated scanner/tool mapping from the **Calibration** menu.
+5. Optionally use **Path Planning -> Import planned path to RoboDK** to create a
+   movement-only program for checking the ordered poses before speed planning.
+6. Open **Speed Planning -> Plan path speeds**.
+7. Choose the deterministic baseline or thesis-style Double Q mode.
+8. Export Pose+Speed CSV or import the speed plan directly to RoboDK.
+
+The **Language** menu switches the live UI between English and Simplified
+Chinese. Text is read from UTF-8 JSON catalogs in `locales/`; **Load language
+JSON...** accepts an external catalog with the same validated key/placeholder
+contract. Switching language only retranslates widgets and does not clear the
+current model or planning state.
+
+Catalogs are strict UTF-8 JSON objects with `meta` and `strings` sections; use
+`locales/en.json` or `locales/zh_CN.json` as a template. Duplicate keys,
+non-string values, invalid format placeholders, and placeholder-name changes
+are rejected atomically, leaving the current language unchanged. Missing keys
+in an otherwise valid external catalog fall back to English.
 
 RoboDK output contains one `Set Speed` instruction immediately before every
 `MoveJ/MoveL`. Its API order is linear speed, **joint speed**, linear
 acceleration and **joint acceleration**. TCP orientation rate/acceleration are
 kept as geometric diagnostics and are not passed off as robot-joint values.
 
+The earlier planned-path import deliberately contains only `MoveJ/MoveL`
+instructions. It does not set or validate speed, so it is a geometry/station
+inspection artifact rather than a production speed-validation result. Both
+RoboDK import modes retain station/frame/tool checks and transactional rollback.
+
+RoboDK tree lookup is exact and rejects blank or duplicate robot, frame, tool,
+program and generated-target names; RoboDK's closest-name fallback is never
+accepted. Replacing a generated namespace inventories every exact
+`<namespace>P<number>` target, including targets left by a previously longer
+path, while leaving similar prefixes untouched. Publication uses a temporary
+program and targets. On failure it vacates newly published names, restores all
+old backups independently, removes new objects best-effort, and restores
+rendering before returning the original error plus any cleanup diagnostics.
+
+For `robodk_tcp_is_scanner`, `T_flange_scanner` must match the selected RoboDK
+Tool TCP. For `separate_tool_frame`, planning/export can still read an older
+configuration without `T_flange_tool`, but RoboDK import is blocked until a
+measured `T_flange_tool` is present and matches `Tool.PoseTool()` within the
+configured position/orientation tolerances.
+
 ## Start without installing packages
 
-From the repository root, run:
+For normal use, double-click `start_software.cmd` in the repository root. It
+sets the working directory and delegates to the existing PowerShell launcher.
+
+For diagnostics, run the underlying launcher directly from the repository
+root:
 
 ```powershell
 & '.\run_integrated_app.ps1'

@@ -13,5 +13,11 @@
     [0.0, 0.0, 1.0, 0.0],
     [0.0, 0.0, 0.0, 1.0]
   ],
-  "notes": "Format example only. Replace with a measured transform and set validated only after calibration verification."
+  "T_flange_tool": [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "notes": "Format example only. Replace both transforms with measured values. T_flange_tool is optional for planning/export but mandatory and checked against Tool.PoseTool before separate_tool_frame RoboDK import. Set validated only after calibration verification."
 }

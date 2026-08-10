@@ -1,5 +1,7 @@
 """Qt dialogs used by the integrated speed-planning workflow."""
 
+from i18n import tr
+
 
 def _qt():
     from OCC.Display.backend import get_qt_modules
@@ -22,24 +24,31 @@ def _double_spin(QtWidgets, minimum, maximum, value, decimals=2, suffix=""):
     return box
 
 
+def _translate_dialog_buttons(QtWidgets, buttons):
+    for standard_button, key in (
+            (QtWidgets.QDialogButtonBox.Ok, "common.ok"),
+            (QtWidgets.QDialogButtonBox.Cancel, "common.cancel")):
+        button = buttons.button(standard_button)
+        if button is not None:
+            button.setText(tr(key))
+
+
 def get_speed_planning_settings(parent=None):
     QtCore, QtWidgets = _qt()
     dialog = QtWidgets.QDialog(parent)
-    dialog.setWindowTitle("Constrained Speed Planning")
+    dialog.setWindowTitle(tr("dialog.speed.title"))
     dialog.setMinimumWidth(500)
     layout = QtWidgets.QVBoxLayout(dialog)
 
-    explanation = QtWidgets.QLabel(
-        "Plan speed after path ordering. Deterministic mode is the production baseline; "
-        "Double-Q is the thesis-compatible research mode. Units: mm, s, deg.")
+    explanation = QtWidgets.QLabel(tr("dialog.speed.explanation"))
     explanation.setWordWrap(True)
     layout.addWidget(explanation)
 
     form = QtWidgets.QFormLayout()
     algorithm = QtWidgets.QComboBox()
-    algorithm.addItem("Deterministic forward/backward (recommended)", "deterministic")
-    algorithm.addItem("Double Q-learning (research)", "double_q")
-    form.addRow("Algorithm", algorithm)
+    algorithm.addItem(tr("dialog.speed.algorithm_deterministic"), "deterministic")
+    algorithm.addItem(tr("dialog.speed.algorithm_double_q"), "double_q")
+    form.addRow(tr("dialog.speed.algorithm"), algorithm)
 
     widgets = {
         "min_linear_speed": _double_spin(QtWidgets, 0.1, 5000, 20, suffix="mm/s"),
@@ -55,22 +64,8 @@ def get_speed_planning_settings(parent=None):
         "safety_factor": _double_spin(QtWidgets, 0.1, 1.0, 0.90, decimals=3),
         "accel_margin_factor": _double_spin(QtWidgets, 1.0, 2.0, 1.10, decimals=3),
     }
-    labels = {
-        "min_linear_speed": "Minimum scanner speed",
-        "max_linear_speed": "Maximum scanner speed",
-        "max_linear_accel": "Maximum linear acceleration",
-        "max_lateral_accel": "Maximum lateral acceleration",
-        "max_angular_speed": "Maximum TCP orientation rate",
-        "max_angular_accel": "Maximum TCP orientation acceleration",
-        "command_joint_speed": "RoboDK joint speed command limit",
-        "command_joint_accel": "RoboDK joint acceleration command limit",
-        "start_speed": "Start speed",
-        "end_speed": "End speed",
-        "safety_factor": "Safety factor",
-        "accel_margin_factor": "Exported acceleration margin",
-    }
     for key, widget in widgets.items():
-        form.addRow(labels[key], widget)
+        form.addRow(tr("dialog.speed." + key), widget)
 
     speed_levels = QtWidgets.QSpinBox()
     speed_levels.setRange(3, 100)
@@ -81,18 +76,17 @@ def get_speed_planning_settings(parent=None):
     seed = QtWidgets.QSpinBox()
     seed.setRange(0, 2147483647)
     seed.setValue(7)
-    form.addRow("Discrete speed levels", speed_levels)
-    form.addRow("Double-Q episodes", episodes)
-    form.addRow("Random seed", seed)
+    form.addRow(tr("dialog.speed.speed_levels"), speed_levels)
+    form.addRow(tr("dialog.speed.episodes"), episodes)
+    form.addRow(tr("dialog.speed.seed"), seed)
     layout.addLayout(form)
 
-    warning = QtWidgets.QLabel(
-        "Important: this stage enforces geometric/TCP constraints. Joint velocity, joint "
-        "acceleration and torque require robot-specific validation before production execution.")
+    warning = QtWidgets.QLabel(tr("dialog.speed.warning"))
     warning.setWordWrap(True)
     layout.addWidget(warning)
 
     buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+    _translate_dialog_buttons(QtWidgets, buttons)
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     layout.addWidget(buttons)
@@ -108,29 +102,33 @@ def get_speed_planning_settings(parent=None):
     return result
 
 
-def get_robodk_import_settings(parent=None):
+def get_robodk_import_settings(parent=None, import_kind="speed"):
+    if import_kind not in ("speed", "path"):
+        raise ValueError("import_kind must be 'speed' or 'path'")
     QtCore, QtWidgets = _qt()
     dialog = QtWidgets.QDialog(parent)
-    dialog.setWindowTitle("Import Speed Plan to RoboDK")
+    dialog.setWindowTitle(tr("dialog.robodk.{}_title".format(import_kind)))
     dialog.setMinimumWidth(440)
     layout = QtWidgets.QFormLayout(dialog)
     robot = QtWidgets.QLineEdit("UR10")
     frame = QtWidgets.QLineEdit("Frame 2")
     tool = QtWidgets.QLineEdit("Creaform MetraSCAN")
-    program = QtWidgets.QLineEdit("IntegratedSpeedPlan")
+    program = QtWidgets.QLineEdit(
+        "IntegratedSpeedPlan" if import_kind == "speed" else "IntegratedPlannedPath")
     namespace = QtWidgets.QLineEdit("")
     first_move = QtWidgets.QComboBox()
-    first_move.addItem("MoveJ to first point, then MoveL", "movej")
-    first_move.addItem("MoveL for every point", "movel")
-    replace = QtWidgets.QCheckBox("Delete and rebuild same-name generated items")
-    layout.addRow("Robot", robot)
-    layout.addRow("Reference frame", frame)
-    layout.addRow("Tool", tool)
-    layout.addRow("Program name", program)
-    layout.addRow("Target namespace (optional)", namespace)
-    layout.addRow("First movement", first_move)
-    layout.addRow("Replace", replace)
+    first_move.addItem(tr("dialog.robodk.movej_then_movel"), "movej")
+    first_move.addItem(tr("dialog.robodk.all_movel"), "movel")
+    replace = QtWidgets.QCheckBox(tr("dialog.robodk.replace_items"))
+    layout.addRow(tr("dialog.robodk.robot"), robot)
+    layout.addRow(tr("dialog.robodk.frame"), frame)
+    layout.addRow(tr("dialog.robodk.tool"), tool)
+    layout.addRow(tr("dialog.robodk.program"), program)
+    layout.addRow(tr("dialog.robodk.namespace"), namespace)
+    layout.addRow(tr("dialog.robodk.first_move"), first_move)
+    layout.addRow(tr("dialog.robodk.replace"), replace)
     buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+    _translate_dialog_buttons(QtWidgets, buttons)
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     layout.addRow(buttons)

@@ -46,15 +46,21 @@ from ui_panels import (
     create_workflow_panel, create_layer_panel, update_workflow_status as _update_ws,
     sync_layer_panel as _sync_layer_panel, get_user_segment_params,
     get_sensor_parameters_dialog, show_usage_instructions, build_workflow_snapshot,
-    format_workflow_snapshot,
+    format_workflow_snapshot, retranslate_panels,
 )
 from workers import TaskRunner
 from export_utils import write_path_pose_csv, write_speed_plan_csv
 from speed_planning_core import ConstraintProfile, plan_speed_profile
 from speed_planning_ui import get_speed_planning_settings, get_robodk_import_settings
-from robodk_bridge import import_speed_plan
+from robodk_bridge import import_planned_path, import_speed_plan
 from pose_transform import load_extrinsic_config, transform_pose_records
 from cad_io import load_cad_shape
+from i18n import (
+    LocaleValidationError, set_language, set_language_from_file,
+    subscribe_language_changed, tr,
+)
+from model_drop import install_model_drop_support
+from surface_segmentation import is_surface_patch
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +87,8 @@ try:
             if hasattr(_w, "setWindowTitle"):
                 _t = _w.windowTitle()
                 if "pythonOCC" in _t or "3D Viewer" in _t:
-                    _w.setWindowTitle("3D Model Processing and Path Planning System")
+                    _w.setObjectName("MainWindow")
+                    _w.setWindowTitle(tr("app.title"))
                     break
 except Exception as _e:
     pass
@@ -112,6 +119,12 @@ _app_ready = False
 # Reentrancy guard: prevent nested close-event dialogs
 _closing_dialog_active = False
 
+# Stable menu IDs remain English because pythonOCC uses them as dictionary
+# keys.  Only the visible titles/actions are retranslated at runtime.
+_translated_menus = {}
+_translated_actions = []
+_language_subscription = None
+
 
 # ---------------------------------------------------------------------------
 # 3. Close-event interceptor
@@ -131,7 +144,8 @@ class MainWindowCloseEvent(QtCore.QObject):
             _closing_dialog_active = True
             try:
                 result = show_topmost_message(
-                    "Confirm Exit", "Are you sure you want to exit the program?",
+                    tr("message.confirm_exit.title"),
+                    tr("message.confirm_exit.body"),
                     type="question")
             finally:
                 _closing_dialog_active = False
@@ -187,6 +201,72 @@ def _sync_layer():
     })
 
 
+def _add_translated_menu(stable_name, translation_key):
+    """Create one pythonOCC menu while keeping a stable internal key."""
+    add_menu(stable_name)
+    window = get_main_window()
+    menu = getattr(window, "_menus", {}).get(stable_name) if window else None
+    if menu is not None:
+        _translated_menus[stable_name] = (menu, translation_key)
+        menu.setTitle(tr(translation_key))
+    return menu
+
+
+def _add_translated_action(stable_menu_name, callback, translation_key):
+    """Add an action and register its text for runtime retranslation."""
+    add_function_to_menu(stable_menu_name, callback)
+    window = get_main_window()
+    menu = getattr(window, "_menus", {}).get(stable_menu_name) if window else None
+    if menu is None or not menu.actions():
+        return None
+    action = menu.actions()[-1]
+    action.setProperty("i18n_key", translation_key)
+    action.setText(tr(translation_key))
+    _translated_actions.append(action)
+    return action
+
+
+def _retranslate_main_ui(_locale=None):
+    """Retranslate persistent widgets without resetting application state."""
+    window = get_main_window()
+    if window is not None:
+        window.setObjectName("MainWindow")
+        window.setWindowTitle(tr("app.title"))
+    for menu, translation_key in _translated_menus.values():
+        menu.setTitle(tr(translation_key))
+    for action in _translated_actions:
+        translation_key = action.property("i18n_key")
+        if translation_key:
+            action.setText(tr(str(translation_key)))
+    retranslate_panels(state)
+
+
+def switch_to_english(event=None):
+    info = set_language("en")
+    set_status_message(tr("language.switched", language=info.native_name))
+
+
+def switch_to_chinese(event=None):
+    info = set_language("zh_CN")
+    set_status_message(tr("language.switched", language=info.native_name))
+
+
+def load_language_json(event=None):
+    file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+        get_main_window(), tr("language.file_dialog_title"), "locales",
+        tr("language.file_filter"))
+    if not file_path:
+        return
+    try:
+        info = set_language_from_file(file_path)
+        set_status_message(tr("language.switched", language=info.native_name))
+    except (LocaleValidationError, OSError, ValueError) as exc:
+        show_topmost_message(
+            tr("common.error"),
+            tr("language.load_failed", error=exc),
+            type="error")
+
+
 # ---------------------------------------------------------------------------
 # 5. Background-task runner
 # ---------------------------------------------------------------------------
@@ -196,7 +276,7 @@ def run_background_task(title, message, fn, on_success, on_error=None):
         if on_error:
             on_error(error_text)
         else:
-            show_topmost_message("Error", error_text, type="error")
+            show_topmost_message(tr("common.error"), error_text, type="error")
     return task_runner.run(title, message, fn, on_success, failure)
 
 
@@ -222,8 +302,8 @@ def _confirm_path_prompt():
     global path_planning_prompt_confirmed
     if not path_planning_prompt_confirmed:
         result = show_topmost_message(
-            "Prompt",
-            "It is recommended to hide existing paths before path planning. Proceed?",
+            tr("common.prompt"),
+            tr("message.path_visibility_prompt"),
             type="question")
         if result == "no":
             return False
@@ -236,20 +316,26 @@ def _confirm_path_prompt():
 # ---------------------------------------------------------------------------
 
 def import_model(event=None):
-    global path_planning_prompt_confirmed
     parent = get_main_window()
     file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-        parent, "Import Model", "",
-        "Model Files (*.step *.stp *.iges *.igs);;"
-        "STEP Files (*.step *.stp);;"
-        "IGES Files (*.iges *.igs);;"
-        "All Files (*)")
+        parent, tr("file.import_model.title"), "",
+        tr("file.import_model.filter"))
     if not file_path:
         return
+    import_model_from_path(file_path)
+
+
+def import_model_from_path(file_path):
+    """Start the existing atomic background import for a chosen/dropped file."""
+    global path_planning_prompt_confirmed
+    file_path = os.path.abspath(os.fspath(file_path))
 
     ext = os.path.splitext(file_path)[1].lower()
     if ext not in ('.step', '.stp', '.iges', '.igs'):
-        show_topmost_message("Error", "Unsupported file format: {}".format(ext), type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.import.unsupported", extension=ext),
+            type="error")
         return
 
     def load_shape():
@@ -267,22 +353,28 @@ def import_model(event=None):
         display.FitAll()
         display.Repaint()
         _sync_layer()
-        _update_workflow("Model imported: {}".format(os.path.basename(file_path)))
+        _update_workflow(tr(
+            "message.import.success", filename=os.path.basename(file_path)))
         print("Model imported successfully: {}".format(os.path.basename(file_path)))
 
     def on_error(error_text):
         print("Error importing model: {}".format(error_text))
-        show_topmost_message("Error", "Error importing model:\n{}".format(error_text), type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.import.failed", error=error_text),
+            type="error")
 
-    set_status_message("Loading CAD model in background: {}".format(os.path.basename(file_path)))
-    run_background_task("Import Model", "Reading STEP/IGES model...",
+    set_status_message(tr(
+        "message.import.loading", filename=os.path.basename(file_path)))
+    run_background_task(tr("file.import_model.title"), tr("message.import.reading"),
                         load_shape, on_success, on_error)
 
 
 def clear_model(event=None):
     global path_planning_prompt_confirmed
     result = show_topmost_message(
-        "Confirm Clear", "Are you sure you want to clear all models and data?", type="question")
+        tr("message.confirm_clear.title"),
+        tr("message.confirm_clear.body"), type="question")
     if result == 'no':
         return
 
@@ -318,8 +410,8 @@ def clear_model(event=None):
         normal_line_objects.clear()
         path_planning_prompt_confirmed = False
 
-        _update_workflow("All models and data have been cleared")
-        show_topmost_message("Success", "All models and data have been cleared")
+        _update_workflow(tr("message.clear.success"))
+        show_topmost_message(tr("common.success"), tr("message.clear.success"))
     except Exception as e:
         print("Error clearing model: {}".format(str(e)))
 
@@ -327,7 +419,8 @@ def clear_model(event=None):
 def exit_program(event=None):
     try:
         result = show_topmost_message(
-            "Confirm Exit", "Are you sure you want to exit the program?", type="question")
+            tr("message.confirm_exit.title"),
+            tr("message.confirm_exit.body"), type="question")
         if result == 'yes':
             print("Program exited")
             sys.exit(0)
@@ -342,7 +435,7 @@ def exit_program(event=None):
 
 def select_single_face(event=None):
     if not state.current_shape:
-        show_topmost_message("Prompt", "Please import a model first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.model"))
         return
     try:
         print("Please click a face in the 3D view to select...")
@@ -373,12 +466,12 @@ def select_face_clicked(shapes, x, y):
         display.Context.UpdateCurrent()
         display.SetSelectionModeNeutral()
         display.Repaint()
-        _update_workflow("Face selected successfully")
+        _update_workflow(tr("message.face_selected"))
 
 
 def segment_faces(event=None):
     if not state.current_shape:
-        show_topmost_message("Prompt", "Please import a model first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.model"))
         return
     try:
         params = get_user_segment_params()
@@ -398,9 +491,12 @@ def segment_faces(event=None):
         def on_success(result):
             faces, diagnostics = result
             if not faces:
-                show_topmost_message("Error", "Segmentation returned no valid faces", type="error")
+                show_topmost_message(
+                    tr("common.error"), tr("message.segmentation.empty"),
+                    type="error")
                 return
             state.current_faces = faces
+            state.surface_patches = [face for face in faces if is_surface_patch(face)]
             state.invalidate_after_segmentation()
             state.last_segmentation_diagnostics = diagnostics
             display.EraseAll()
@@ -408,29 +504,65 @@ def segment_faces(event=None):
                 rgb_color(0.8, 0.8, 1.0), rgb_color(1.0, 0.8, 0.8),
                 rgb_color(0.8, 1.0, 0.8), rgb_color(1.0, 1.0, 0.8),
             ]
-            for i, face in enumerate(state.current_faces):
-                display.DisplayShape(face, color=colors[i % len(colors)], update=False)
+            if state.surface_patches:
+                # Mesh-grid patches retain the exact source BRep. Display the
+                # source surface and overlay each connected patch representative.
+                display.DisplayShape(
+                    state.current_shape, color=rgb_color(0.7, 0.7, 0.7),
+                    transparency=0.35, update=False)
+                for i, patch in enumerate(state.surface_patches):
+                    display.DisplayShape(
+                        patch.center, color=colors[i % len(colors)], update=False)
+            else:
+                for i, face in enumerate(state.current_faces):
+                    display.DisplayShape(
+                        face, color=colors[i % len(colors)], update=False)
             display.FitAll()
             display.Repaint()
-            print("Segmentation complete: {} patches (u={}, v={}), area ratio {:.6f}".format(
-                len(faces), u, v, diagnostics.get("area_ratio", 0.0)))
-            _update_workflow("Face segmentation complete: {} patches, area ratio {:.6f}".format(
-                len(faces), diagnostics.get("area_ratio", 0.0)))
-            if diagnostics.get("warnings"):
+            strategy = diagnostics.get("strategy", "equal_param")
+            print("Segmentation complete: {} patches (u={}, v={}, strategy={}), "
+                  "area ratio {:.6f}".format(
+                      len(faces), u, v, strategy,
+                      diagnostics.get("area_ratio", 0.0)))
+            _update_workflow(tr(
+                "message.segmentation.complete", count=len(faces),
+                strategy=strategy,
+                ratio=diagnostics.get("area_ratio", 0.0)))
+            diagnostic_messages = (
+                list(diagnostics.get("warnings", []))
+                + list(diagnostics.get("input_warnings", [])))
+            if diagnostic_messages:
+                partial = bool(
+                    diagnostics.get("area_rejected_splits")
+                    or diagnostics.get("fallback_faces"))
+                input_only = bool(diagnostics.get("input_warnings")) and not bool(
+                    diagnostics.get("warnings"))
+                if partial:
+                    title_key = "dialog.segmentation_partial.title"
+                    message_key = "message.segmentation.partial"
+                elif input_only:
+                    title_key = "dialog.input_geometry_warning.title"
+                    message_key = "message.segmentation.diagnostics"
+                else:
+                    title_key = "dialog.segmentation_diagnostics.title"
+                    message_key = "message.segmentation.diagnostics"
                 show_topmost_message(
-                    "Segmentation Diagnostics",
-                    "Segmentation completed with diagnostics:\n\n" +
-                    "\n".join(diagnostics["warnings"]),
+                    tr(title_key),
+                    tr(message_key, details="\n".join(diagnostic_messages)),
                     type="warning")
 
         def on_error(error_text):
             print("Error segmenting faces: {}".format(error_text))
-            show_topmost_message("Error", "Face segmentation failed:\n{}".format(error_text), type="error")
+            show_topmost_message(
+                tr("common.error"),
+                tr("message.segmentation.failed", error=error_text),
+                type="error")
 
-        set_status_message("Face segmentation running in background")
-        run_background_task("Segment Faces", "Splitting CAD faces...",
+        set_status_message(tr("message.segmentation.running"))
+        run_background_task(tr("action.segment_faces"), tr("message.segmentation.task"),
                             lambda: segment_model(shape_to_segment, u, v,
-                                                  return_diagnostics=True),
+                                                  return_diagnostics=True,
+                                                  strategy="auto"),
                             on_success, on_error)
     except Exception as e:
         print("Error segmenting faces: {}".format(str(e)))
@@ -439,7 +571,7 @@ def segment_faces(event=None):
 
 def get_centers(event=None):
     if not state.current_faces:
-        show_topmost_message("Prompt", "Please segment faces first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.segment"))
         return
     try:
         state.face_centers.clear()
@@ -463,10 +595,14 @@ def get_centers(event=None):
 
         for face in state.current_faces:
             try:
-                props = GProp_GProps()
-                brepgprop.SurfaceProperties(face, props)
-                center = props.CentreOfMass()
-                normal = calculate_face_normal(face)
+                if is_surface_patch(face):
+                    center = face.center
+                    normal = calculate_face_normal(face)
+                else:
+                    props = GProp_GProps()
+                    brepgprop.SurfaceProperties(face, props)
+                    center = props.CentreOfMass()
+                    normal = calculate_face_normal(face)
                 state.face_centers.append(center)
                 state.face_normals.append(normal)
 
@@ -481,7 +617,8 @@ def get_centers(event=None):
 
         display.FitAll()
         print("Centers calculated: {}".format(len(state.face_centers)))
-        _update_workflow("Center calculation complete: {} centers".format(len(state.face_centers)))
+        _update_workflow(tr(
+            "message.centers.complete", count=len(state.face_centers)))
     except Exception as e:
         print("Error getting centers: {}".format(str(e)))
         traceback.print_exc()
@@ -489,7 +626,7 @@ def get_centers(event=None):
 
 def generate_center_viewpoints(event=None):
     if not state.current_faces:
-        show_topmost_message("Prompt", "Please segment faces first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.segment"))
         return
     try:
         state.view_points.clear()
@@ -516,7 +653,8 @@ def generate_center_viewpoints(event=None):
 
         display.FitAll()
         print("Center viewpoints generated: {}".format(len(center_vps)))
-        _update_workflow("Center viewpoints generated: {} viewpoints".format(len(center_vps)))
+        _update_workflow(tr(
+            "message.center_viewpoints.complete", count=len(center_vps)))
     except Exception as e:
         print("Error generating center viewpoints: {}".format(str(e)))
         traceback.print_exc()
@@ -524,7 +662,7 @@ def generate_center_viewpoints(event=None):
 
 def generate_candidate_viewpoints(event=None):
     if not state.current_faces:
-        show_topmost_message("Prompt", "Please segment faces first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.segment"))
         return
     try:
         state.view_points.clear()
@@ -557,7 +695,8 @@ def generate_candidate_viewpoints(event=None):
         display.FitAll()
         print("Candidate viewpoints generated: {} (including {} centres)".format(
             len(all_vps), len(center_vps)))
-        _update_workflow("Candidate viewpoints generated: {} viewpoints".format(len(all_vps)))
+        _update_workflow(tr(
+            "message.candidate_viewpoints.complete", count=len(all_vps)))
     except Exception as e:
         print("Error generating candidate viewpoints: {}".format(str(e)))
         traceback.print_exc()
@@ -565,10 +704,10 @@ def generate_candidate_viewpoints(event=None):
 
 def filter_optimal_viewpoints(event=None):
     if not state.current_faces:
-        show_topmost_message("Prompt", "Please segment faces first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.segment"))
         return
     if not state.face_centers:
-        show_topmost_message("Prompt", "Please get centers first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.centers"))
         return
     try:
         state.optimal_viewpoints.clear()
@@ -577,7 +716,8 @@ def filter_optimal_viewpoints(event=None):
         if not state.view_points:
             generate_candidate_viewpoints()
         if not state.view_points:
-            show_topmost_message("Prompt", "No viewpoints available")
+            show_topmost_message(
+                tr("common.prompt"), tr("message.viewpoints.none"))
             return
 
         num_faces = len(state.current_faces)
@@ -615,7 +755,9 @@ def filter_optimal_viewpoints(event=None):
 
         display.FitAll()
         print("Optimal viewpoints filtered: {}".format(len(state.optimal_viewpoints)))
-        _update_workflow("Optimal viewpoints filtered: {}".format(len(state.optimal_viewpoints)))
+        _update_workflow(tr(
+            "message.optimal_viewpoints.complete",
+            count=len(state.optimal_viewpoints)))
     except Exception as e:
         print("Error filtering optimal viewpoints: {}".format(str(e)))
         traceback.print_exc()
@@ -628,8 +770,10 @@ def filter_optimal_viewpoints(event=None):
 def toggle_collision_detection(event=None):
     global collision_detection_enabled
     collision_detection_enabled = not collision_detection_enabled
-    status = "Enabled" if collision_detection_enabled else "Disabled"
-    show_topmost_message("Collision Detection", "Collision detection is now {}".format(status))
+    status = tr("common.enabled") if collision_detection_enabled else tr("common.disabled")
+    show_topmost_message(
+        tr("menu.collision_detection"),
+        tr("message.collision.toggle", state=status))
     print("Collision detection: {}".format(status))
 
 
@@ -637,10 +781,11 @@ def set_sensor_parameters(event=None):
     result = get_sensor_parameters_dialog(current_config=state.sensor_size_config)
     if result is not None:
         state.sensor_size_config.update(result)
-        _update_workflow("Sensor parameters updated: W={}, H={}, D={}".format(
-            result['width'], result['height'], result['depth']))
-        show_topmost_message("Success", "Sensor parameters updated: W={}, H={}, D={}".format(
-            result['width'], result['height'], result['depth']))
+        message = tr(
+            "message.sensor.updated", width=result['width'],
+            height=result['height'], depth=result['depth'])
+        _update_workflow(message)
+        show_topmost_message(tr("common.success"), message)
 
 
 def create_sensor_volumes_ui(event=None):
@@ -649,7 +794,7 @@ def create_sensor_volumes_ui(event=None):
         or state.view_points_with_pose
         or state.center_view_points_with_pose)
     if not viewpoints_with_pose:
-        show_topmost_message("Prompt", "Please generate viewpoints first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.viewpoints"))
         return
 
     try:
@@ -685,17 +830,21 @@ def create_sensor_volumes_ui(event=None):
         display.Repaint()
         state.sensor_volumes_created = True
         print("Sensor volumes created: {}".format(created))
-        _update_workflow("Sensor volume creation complete: {} volumes".format(created))
-        show_topmost_message("Success", "Sensor volume creation complete, total {}".format(created))
+        message = tr("message.sensor_volumes.complete", count=created)
+        _update_workflow(message)
+        show_topmost_message(tr("common.success"), message)
     except Exception as e:
         print("Error creating sensor volumes: {}".format(str(e)))
         traceback.print_exc()
-        show_topmost_message("Error", "Failed to create sensor volumes: {}".format(str(e)), type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.sensor_volumes.failed", error=e),
+            type="error")
 
 
 def generate_min_bounding_boxes(event=None):
     if not state.current_faces:
-        show_topmost_message("Prompt", "Please segment faces first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.segment"))
         return
     try:
         for obj in state.obb_visualizations:
@@ -722,23 +871,25 @@ def generate_min_bounding_boxes(event=None):
         display.Repaint()
         state.obb_boxes_generated = True
         print("OBB boxes generated: {}".format(len(state.face_obbs)))
-        _update_workflow("Minimum bounding boxes generated: {} boxes".format(len(state.face_obbs)))
-        show_topmost_message("Success", "Minimum bounding boxes generated, total {}".format(
-            len(state.face_obbs)))
+        message = tr("message.obb.complete", count=len(state.face_obbs))
+        _update_workflow(message)
+        show_topmost_message(tr("common.success"), message)
     except Exception as e:
         print("Error generating OBB: {}".format(str(e)))
-        show_topmost_message("Error", "Failed to generate OBB: {}".format(str(e)))
+        show_topmost_message(
+            tr("common.error"), tr("message.obb.failed", error=e),
+            type="error")
 
 
 def execute_collision_detection(event=None):
     if not state.view_points and not state.center_view_points:
-        show_topmost_message("Prompt", "Please generate viewpoints first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.viewpoints"))
         return
     try:
         # Auto-generate OBBs if needed
         if not state.obb_boxes_generated:
             if not state.current_faces:
-                show_topmost_message("Prompt", "Please segment faces first")
+                show_topmost_message(tr("common.prompt"), tr("message.require.segment"))
                 return
             state.face_obbs.clear()
             for obj in state.obb_visualizations:
@@ -762,31 +913,36 @@ def execute_collision_detection(event=None):
                         state.obb_visualizations.append(vis)
             display.Repaint()
             state.obb_boxes_generated = True
-            _update_workflow("OBB boxes generated: {}".format(len(state.face_obbs)))
+            _update_workflow(tr(
+                "message.obb.complete", count=len(state.face_obbs)))
 
         if not state.sensor_volumes_created:
-            show_topmost_message("Prompt", "Please create sensor volumes first")
+            show_topmost_message(
+                tr("common.prompt"), tr("message.require.sensor_volumes"))
             return
 
         if state.face_obbs and state.sensor_volumes_list:
             results = check_collision_sweep(state.face_obbs, state.sensor_volumes_list)
             summary = summarize_collision_results(results)
-            show_topmost_message("Collision Result",
-                "Detection complete: {} viewpoints, {} collisions detected".format(
-                    summary.total, summary.collisions))
+            message = tr(
+                "message.collision.complete", collisions=summary.collisions,
+                total=summary.total)
+            show_topmost_message(tr("menu.collision_detection"), message)
             state.collision_detection_executed = True
-            _update_workflow("Collision detection complete: {}/{} collisions".format(
-                summary.collisions, summary.total))
+            _update_workflow(message)
         else:
-            show_topmost_message("Prompt", "No bounding boxes or sensor volumes available")
+            show_topmost_message(
+                tr("common.prompt"), tr("message.collision.inputs_missing"))
     except Exception as e:
         print("Error executing collision detection: {}".format(str(e)))
-        show_topmost_message("Error", "Collision detection failed: {}".format(str(e)), type="error")
+        show_topmost_message(
+            tr("common.error"), tr("message.collision.failed", error=e),
+            type="error")
 
 
 def demo_collision_detection(event=None):
     if not state.face_obbs:
-        show_topmost_message("Prompt", "Please generate OBB bounding boxes first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.obb"))
         return
     try:
         from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
@@ -804,9 +960,13 @@ def demo_collision_detection(event=None):
             for obb in state.face_obbs)
 
         if collision:
-            show_topmost_message("Demo Result", "Collision detected! Test cube intersects with OBB.")
+            show_topmost_message(
+                tr("dialog.collision_demo.title"),
+                tr("message.collision.demo_detected"))
         else:
-            show_topmost_message("Demo Result", "No collision detected.")
+            show_topmost_message(
+                tr("dialog.collision_demo.title"),
+                tr("message.collision.demo_clear"))
     except Exception as e:
         print("Error demoing collision detection: {}".format(str(e)))
         traceback.print_exc()
@@ -818,7 +978,8 @@ def demo_collision_detection(event=None):
 
 def connect_sequentially(event=None):
     if not state.optimal_viewpoints:
-        show_topmost_message("Prompt", "Please filter optimal viewpoints first")
+        show_topmost_message(
+            tr("common.prompt"), tr("message.require.optimal_viewpoints"))
         return
     if not _confirm_path_prompt():
         return
@@ -826,7 +987,8 @@ def connect_sequentially(event=None):
         _delete_existing_path()
         n = len(state.optimal_viewpoints)
         if n < 2:
-            show_topmost_message("Prompt", "At least 2 optimal viewpoints required")
+            show_topmost_message(
+                tr("common.prompt"), tr("message.require.two_viewpoints"))
             return
         state.optimal_path = list(range(n))
         dist_matrix = build_distance_matrix(state.optimal_viewpoints)
@@ -834,8 +996,9 @@ def connect_sequentially(event=None):
         total = calculate_path_length(state.optimal_path, dist_matrix)
         state.last_path_length = total
         display.FitAll()
-        _update_workflow("Sequential path complete, total length: {:.6f}".format(total))
-        show_topmost_message("Success", "Sequential connection complete, total path length: {:.6f}".format(total))
+        message = tr("message.path.sequential_complete", length=total)
+        _update_workflow(message)
+        show_topmost_message(tr("common.success"), message)
     except Exception as e:
         print("Error in sequential path planning: {}".format(str(e)))
         traceback.print_exc()
@@ -843,7 +1006,8 @@ def connect_sequentially(event=None):
 
 def solve_with_greedy_algorithm(event=None):
     if not state.optimal_viewpoints:
-        show_topmost_message("Prompt", "Please filter optimal viewpoints first")
+        show_topmost_message(
+            tr("common.prompt"), tr("message.require.optimal_viewpoints"))
         return
     if not _confirm_path_prompt():
         return
@@ -854,8 +1018,9 @@ def solve_with_greedy_algorithm(event=None):
         total = calculate_path_length(state.optimal_path, dist_matrix)
         state.last_path_length = total
         display.FitAll()
-        _update_workflow("Greedy path complete, total length: {:.6f}".format(total))
-        show_topmost_message("Success", "Greedy algorithm complete, total path length: {:.6f}".format(total))
+        message = tr("message.path.greedy_complete", length=total)
+        _update_workflow(message)
+        show_topmost_message(tr("common.success"), message)
     except Exception as e:
         print("Error in greedy algorithm: {}".format(str(e)))
         traceback.print_exc()
@@ -863,18 +1028,20 @@ def solve_with_greedy_algorithm(event=None):
 
 def solve_with_abc_algorithm(event=None):
     if not state.optimal_viewpoints:
-        show_topmost_message("Prompt", "Please filter optimal viewpoints first")
+        show_topmost_message(
+            tr("common.prompt"), tr("message.require.optimal_viewpoints"))
         return
     if not _confirm_path_prompt():
         return
     n = len(state.optimal_viewpoints)
     if n < 2:
-        show_topmost_message("Prompt", "At least 2 optimal viewpoints required")
+        show_topmost_message(
+            tr("common.prompt"), tr("message.require.two_viewpoints"))
         return
 
     _delete_existing_path()
     abc_points = np.array([[p.X(), p.Y(), p.Z()] for p in state.optimal_viewpoints])
-    set_status_message("ABC path planning started in the background")
+    set_status_message(tr("message.path.abc_running"))
 
     def on_success(result):
         state.optimal_path = list(result["best_tour"])
@@ -882,31 +1049,37 @@ def solve_with_abc_algorithm(event=None):
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         display.FitAll()
         display.Repaint()
-        _update_workflow("ABC path complete, total length: {:.6f}".format(result["best_length"]))
-        show_topmost_message("Success", "ABC algorithm complete, total path length: {:.6f}".format(
-            result["best_length"]))
+        message = tr("message.path.abc_complete", length=result["best_length"])
+        _update_workflow(message)
+        show_topmost_message(tr("common.success"), message)
 
     def on_error(error_text):
         print("Error in ABC path planning: {}".format(error_text))
-        show_topmost_message("Error", "ABC path planning failed:\n{}".format(error_text), type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.path.abc_failed", error=error_text),
+            type="error")
 
-    run_background_task("ABC Path Planning", "Executing ABC algorithm...",
+    run_background_task(tr("action.solve_abc"),
+                        tr("message.path.abc_executing"),
                         lambda: run_abc_solver(abc_points), on_success, on_error)
 
 
 def solve_with_mscga_algorithm(event=None):
     if not state.optimal_viewpoints:
-        show_topmost_message("Prompt", "Please filter optimal viewpoints first")
+        show_topmost_message(
+            tr("common.prompt"), tr("message.require.optimal_viewpoints"))
         return
     if not _confirm_path_prompt():
         return
     n = len(state.optimal_viewpoints)
     if n < 2:
-        show_topmost_message("Prompt", "At least 2 optimal viewpoints required")
+        show_topmost_message(
+            tr("common.prompt"), tr("message.require.two_viewpoints"))
         return
 
     _delete_existing_path()
-    set_status_message("MSCGA path planning started in the background")
+    set_status_message(tr("message.path.mscga_running"))
 
     def on_success(result):
         state.optimal_path = list(result["best_tour"])
@@ -914,21 +1087,26 @@ def solve_with_mscga_algorithm(event=None):
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         display.FitAll()
         display.Repaint()
-        _update_workflow("MSCGA path complete, total length: {:.6f}".format(result["best_length"]))
-        show_topmost_message("Success", "MSCGA algorithm complete, total path length: {:.6f}".format(
-            result["best_length"]))
+        message = tr("message.path.mscga_complete", length=result["best_length"])
+        _update_workflow(message)
+        show_topmost_message(tr("common.success"), message)
 
     def on_error(error_text):
         print("Error in MSCGA path planning: {}".format(error_text))
-        show_topmost_message("Error", "MSCGA path planning failed:\n{}".format(error_text), type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.path.mscga_failed", error=error_text),
+            type="error")
 
-    run_background_task("MSCGA Path Planning", "Executing MSCGA algorithm...",
+    run_background_task(tr("action.solve_mscga"),
+                        tr("message.path.mscga_executing"),
                         lambda: run_mscga_solver(state.optimal_viewpoints), on_success, on_error)
 
 
 def plan_path(event=None):
     if not state.optimal_viewpoints:
-        show_topmost_message("Prompt", "Please filter optimal viewpoints first")
+        show_topmost_message(
+            tr("common.prompt"), tr("message.require.optimal_viewpoints"))
         return
     try:
         _delete_existing_path()
@@ -937,7 +1115,7 @@ def plan_path(event=None):
         total = calculate_path_length(state.optimal_path, dist_matrix)
         state.last_path_length = total
         display.FitAll()
-        _update_workflow("Path planning complete, total length: {:.6f}".format(total))
+        _update_workflow(tr("message.path.complete", length=total))
     except Exception as e:
         print("Error in path planning: {}".format(str(e)))
         traceback.print_exc()
@@ -949,23 +1127,27 @@ def plan_path(event=None):
 
 def export_path_to_csv(event=None):
     if not state.optimal_viewpoints or not state.optimal_viewpoints_with_pose:
-        show_topmost_message("Prompt", "Please filter optimal viewpoints first")
+        show_topmost_message(
+            tr("common.prompt"), tr("message.require.optimal_viewpoints"))
         return
     try:
         parent = get_main_window()
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            parent, "Save Path Points as CSV", "optimal_path_pose_list.csv",
-            "CSV Files (*.csv);;All Files (*)")
+            parent, tr("file.export_path.title"),
+            tr("file.export_path.default_name"), tr("file.csv_filter"))
         if not file_path:
             return
 
         count = write_path_pose_csv(file_path, state.optimal_viewpoints_with_pose, state.optimal_path)
-        _update_workflow("Exported {} path points to CSV".format(count))
+        _update_workflow(tr("message.export.path_complete", path=file_path))
         print("Path points exported to CSV: {}".format(file_path))
     except Exception as e:
         print("Error exporting path points: {}".format(str(e)))
         traceback.print_exc()
-        show_topmost_message("Error", "Error exporting path points: {}".format(str(e)), type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.export.path_failed", error=e),
+            type="error")
 
 
 # ---------------------------------------------------------------------------
@@ -974,8 +1156,8 @@ def export_path_to_csv(event=None):
 
 def load_scanner_tool_extrinsic(event=None):
     file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-        get_main_window(), "Load Scanner-to-Tool Extrinsic", "calibration",
-        "JSON Files (*.json);;All Files (*)")
+        get_main_window(), tr("file.load_extrinsic.title"), "calibration",
+        tr("file.json_filter"))
     if not file_path:
         return
     try:
@@ -987,26 +1169,28 @@ def load_scanner_tool_extrinsic(event=None):
         state.speed_plan_result = None
         state.last_speed_csv_path = ""
         state.last_robodk_import.clear()
-        relationship = ("T_flange_scanner (RoboDK TCP is scanner)"
-                        if config.mapping_mode == "robodk_tcp_is_scanner"
-                        else "T_tool_scanner (separate command tool)")
-        message = ("Loaded tool mapping {}: status={}, mode={}, {}"
-                   .format(config.config_id, config.calibration_status,
-                           config.mapping_mode, relationship))
+        relationship = tr(
+            "message.extrinsic.relationship_scanner_tcp"
+            if config.mapping_mode == "robodk_tcp_is_scanner"
+            else "message.extrinsic.relationship_separate_tool")
+        message = tr(
+            "message.extrinsic.loaded", config=config.config_id,
+            status=config.calibration_status, mode=config.mapping_mode,
+            relationship=relationship)
         _update_workflow(message)
         show_topmost_message(
-            "Scanner-to-Tool Extrinsic",
-            message + ("\n\nRoboDK simulation import is enabled. Physical mounting "
-                       "validation is still required before production execution."
-                       if config.validated and not config.physically_validated else
-                       "\n\nRoboDK import is enabled for this physically validated calibration."
-                       if config.physically_validated else
-                       "\n\nThis configuration is not validated. Planning/export are allowed, "
-                       "but RoboDK import remains blocked."),
+            tr("dialog.extrinsic.title"),
+            message + "\n\n" + tr(
+                "message.extrinsic.simulation_only"
+                if config.validated and not config.physically_validated else
+                "message.extrinsic.physically_validated"
+                if config.physically_validated else
+                "message.extrinsic.unvalidated"),
             type="info" if config.physically_validated else "warning")
     except Exception as e:
-        show_topmost_message("Error", "Invalid extrinsic configuration:\n{}".format(e),
-                             type="error")
+        show_topmost_message(
+            tr("common.error"), tr("message.extrinsic.invalid", error=e),
+            type="error")
 
 
 def clear_scanner_tool_extrinsic(event=None):
@@ -1016,11 +1200,10 @@ def clear_scanner_tool_extrinsic(event=None):
     state.speed_plan_result = None
     state.last_speed_csv_path = ""
     state.last_robodk_import.clear()
-    _update_workflow("Scanner-to-tool extrinsic cleared; RoboDK import is blocked")
+    _update_workflow(tr("message.extrinsic.cleared_status"))
     show_topmost_message(
-        "Scanner-to-Tool Extrinsic",
-        "Extrinsic cleared. Speed planning may still run on scanner poses for research, "
-        "but RoboDK import is blocked until a validated calibration is loaded.",
+        tr("dialog.extrinsic.title"),
+        tr("message.extrinsic.cleared_body"),
         type="warning")
 
 
@@ -1058,9 +1241,63 @@ def _ordered_pose_records():
     }
 
 
+def import_planned_path_to_robodk(event=None):
+    """Import ordered, calibrated poses without creating speed commands."""
+    if not state.optimal_path or not state.optimal_viewpoints_with_pose:
+        show_topmost_message(tr("common.prompt"), tr("message.require.path"))
+        return
+    try:
+        records, pose_metadata = _ordered_pose_records()
+    except Exception as exc:
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.path.input_invalid", error=exc),
+            type="error")
+        return
+    if not pose_metadata.get("extrinsic_validated", False):
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.robodk.path_calibration_required"),
+            type="error")
+        return
+
+    settings = get_robodk_import_settings(get_main_window(), import_kind="path")
+    if not settings:
+        return
+    if settings.get("replace"):
+        answer = show_topmost_message(
+            tr("message.robodk.confirm_replace.title"),
+            tr("message.robodk.confirm_replace.body"),
+            type="question")
+        if answer != "yes":
+            return
+
+    def on_success(summary):
+        state.last_robodk_import = summary
+        message = tr(
+            "message.robodk.complete",
+            program=summary["program"],
+            poses=summary["pose_count"],
+            instructions=summary["instruction_count"])
+        _update_workflow(message)
+        show_topmost_message(tr("dialog.robodk.path_title"), message)
+
+    def on_error(error_text):
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.robodk.path_failed", error=error_text),
+            type="error")
+
+    run_background_task(
+        tr("dialog.robodk.path_title"),
+        tr("message.robodk.path_running"),
+        lambda: import_planned_path(records, pose_metadata, **settings),
+        on_success, on_error)
+
+
 def plan_path_speeds(event=None):
     if not state.optimal_path or not state.optimal_viewpoints_with_pose:
-        show_topmost_message("Prompt", "Please complete path planning before speed planning")
+        show_topmost_message(tr("common.prompt"), tr("message.require.path"))
         return
     settings = get_speed_planning_settings(get_main_window())
     if not settings:
@@ -1070,97 +1307,112 @@ def plan_path_speeds(event=None):
         profile = ConstraintProfile(**settings)
         records, pose_metadata = _ordered_pose_records()
     except Exception as e:
-        show_topmost_message("Error", "Invalid speed planning input: {}".format(e), type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.speed.input_invalid", error=e),
+            type="error")
         return
 
     def work():
         result = plan_speed_profile(records, profile, algorithm)
         result.diagnostics.update(pose_metadata)
         if not pose_metadata["extrinsic_validated"]:
-            result.warnings.append(
-                "Scanner-to-tool extrinsic is missing or unvalidated; RoboDK import is blocked.")
+            result.warnings.append(tr(
+                "message.speed.extrinsic_missing_warning"))
         elif not pose_metadata.get("physical_calibration_validated", False):
-            result.warnings.append(
-                "RoboDK station TCP mapping is verified, but the physical scanner mounting "
-                "has not been independently calibrated; use for simulation validation only.")
+            result.warnings.append(tr(
+                "message.speed.physical_unvalidated_warning"))
         return result
 
     def on_success(result):
         state.speed_plan_result = result
         state.last_speed_csv_path = ""
         state.last_robodk_import.clear()
-        message = ("Speed planning complete: {} poses, {:.3f} s, algorithm={}, feasible={}"
-                   .format(len(result.points), result.total_time, result.algorithm, result.feasible))
+        message = tr(
+            "message.speed.complete", count=len(result.points),
+            seconds=result.total_time, algorithm=result.algorithm,
+            feasible=tr("common.yes") if result.feasible else tr("common.no"))
         _update_workflow(message)
         warning_text = "\n\n".join(result.warnings)
-        show_topmost_message("Speed Planning Complete", message + "\n\n" + warning_text,
+        show_topmost_message(tr("dialog.speed.title"), message + "\n\n" + warning_text,
                              type="warning" if result.warnings else "info")
 
     def on_error(error_text):
-        show_topmost_message("Error", "Speed planning failed:\n{}".format(error_text), type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.speed.failed", error=error_text),
+            type="error")
 
-    run_background_task("Speed Planning", "Optimizing speed at every ordered pose...",
+    run_background_task(tr("menu.speed_planning"), tr("message.speed.running"),
                         work,
                         on_success, on_error)
 
 
 def export_speed_plan_to_csv(event=None):
     if state.speed_plan_result is None:
-        show_topmost_message("Prompt", "Please run speed planning first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.speed_plan"))
         return
     file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-        get_main_window(), "Save Pose + Speed CSV", "planned_pose_speed.csv",
-        "CSV Files (*.csv);;All Files (*)")
+        get_main_window(), tr("file.export_speed.title"),
+        tr("file.export_speed.default_name"), tr("file.csv_filter"))
     if not file_path:
         return
     try:
         count = write_speed_plan_csv(file_path, state.speed_plan_result)
         state.last_speed_csv_path = file_path
-        _update_workflow("Exported {} poses with speed parameters".format(count))
+        message = tr("message.export.speed_complete", path=file_path)
+        _update_workflow(message)
         show_topmost_message(
-            "Success",
-            "Pose + speed CSV exported:\n{}\n\nMetadata sidecar:\n{}.metadata.json".format(
-                file_path, file_path))
+            tr("common.success"), message)
     except Exception as e:
-        show_topmost_message("Error", "Speed CSV export failed: {}".format(e), type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.export.speed_failed", error=e),
+            type="error")
 
 
 def import_speed_plan_to_robodk(event=None):
     if state.speed_plan_result is None:
-        show_topmost_message("Prompt", "Please run speed planning first")
+        show_topmost_message(tr("common.prompt"), tr("message.require.speed_plan"))
         return
     if not state.speed_plan_result.feasible:
-        show_topmost_message("Error", "Speed plan has constraint violations and cannot be imported", type="error")
+        show_topmost_message(
+            tr("common.error"), tr("message.robodk.constraint_violation"),
+            type="error")
         return
     if not state.speed_plan_result.diagnostics.get("extrinsic_validated", False):
         show_topmost_message(
-            "Error",
-            "RoboDK import is blocked: load a scanner-to-tool calibration whose "
-            "calibration_status is validated, then rerun speed planning.",
+            tr("common.error"), tr("message.robodk.calibration_required"),
             type="error")
         return
-    settings = get_robodk_import_settings(get_main_window())
+    settings = get_robodk_import_settings(get_main_window(), import_kind="speed")
     if not settings:
         return
     if settings.get("replace"):
         answer = show_topmost_message(
-            "Confirm Replace",
-            "RoboDK same-name generated program/targets will be deleted and rebuilt. Continue?",
+            tr("message.robodk.confirm_replace.title"),
+            tr("message.robodk.confirm_replace.body"),
             type="question")
         if answer != "yes":
             return
 
     def on_success(summary):
         state.last_robodk_import = summary
-        message = ("RoboDK import complete: program={}, poses={}, instructions={}"
-                   .format(summary["program"], summary["pose_count"], summary["instruction_count"]))
+        message = tr(
+            "message.robodk.complete", program=summary["program"],
+            poses=summary["pose_count"],
+            instructions=summary["instruction_count"])
         _update_workflow(message)
-        show_topmost_message("RoboDK Import Complete", message)
+        show_topmost_message(tr("dialog.robodk.speed_title"), message)
 
     def on_error(error_text):
-        show_topmost_message("Error", "RoboDK import failed:\n{}".format(error_text), type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.robodk.speed_failed", error=error_text),
+            type="error")
 
-    run_background_task("RoboDK Import", "Creating Set Speed -> Move instructions...",
+    run_background_task(tr("dialog.robodk.speed_title"),
+                        tr("message.robodk.speed_running"),
                         lambda: import_speed_plan(state.speed_plan_result, **settings),
                         on_success, on_error)
 
@@ -1169,49 +1421,53 @@ def import_speed_plan_to_robodk(event=None):
 # 13. Toggle / layer handlers
 # ---------------------------------------------------------------------------
 
-def _toggle_flag(flag_name, label, required_condition=True, prompt=None):
+def _toggle_flag(flag_name, layer_key, required_condition=True, prompt_key=None):
     if not required_condition:
-        show_topmost_message("Prompt", prompt or "Required data is not available")
+        show_topmost_message(
+            tr("common.prompt"),
+            tr(prompt_key) if prompt_key else tr("message.require.data"))
         _sync_layer()
         return
     current = getattr(state, flag_name)
     setattr(state, flag_name, not current)
-    action = "shown" if not current else "hidden"
+    action = tr("common.shown") if not current else tr("common.hidden")
     _do_render()
-    set_status_message("{} {}".format(label, action))
+    set_status_message(tr(
+        "message.layer_toggled", layer=tr("layer." + layer_key), state=action))
 
 
 def toggle_model_layer(event=None):
-    _toggle_flag("show_model", "Model / patches",
-                 state.current_shape is not None, "Please import a model first")
+    _toggle_flag("show_model", "model",
+                 state.current_shape is not None, "message.require.model")
 
 def toggle_face_centers(event=None):
-    _toggle_flag("show_face_centers", "Face centers",
-                 bool(state.face_centers), "Please get face centers first")
+    _toggle_flag("show_face_centers", "face_centers",
+                 bool(state.face_centers), "message.require.centers")
 
 def toggle_normal_lines(event=None):
-    _toggle_flag("show_normal_lines", "Normal lines",
-                 bool(state.center_view_points), "Please generate center viewpoints first")
+    _toggle_flag("show_normal_lines", "normal_lines",
+                 bool(state.center_view_points), "message.require.viewpoints")
 
 def toggle_all_viewpoints(event=None):
-    _toggle_flag("show_all_viewpoints", "All viewpoints",
-                 bool(state.view_points), "Please generate viewpoints first")
+    _toggle_flag("show_all_viewpoints", "all_viewpoints",
+                 bool(state.view_points), "message.require.viewpoints")
 
 def toggle_optimal_viewpoints(event=None):
-    _toggle_flag("show_optimal_viewpoints", "Optimal viewpoints",
-                 bool(state.optimal_viewpoints), "Please filter optimal viewpoints first")
+    _toggle_flag("show_optimal_viewpoints", "optimal_viewpoints",
+                 bool(state.optimal_viewpoints), "message.require.optimal_viewpoints")
 
 def toggle_planned_path(event=None):
-    _toggle_flag("show_planned_path", "Planned path",
-                 bool(state.optimal_path and state.optimal_viewpoints), "Please plan path first")
+    _toggle_flag("show_planned_path", "planned_path",
+                 bool(state.optimal_path and state.optimal_viewpoints),
+                 "message.require.path")
 
 def toggle_sensor_volumes(event=None):
-    _toggle_flag("show_sensor_volumes", "Sensor volumes",
-                 bool(state.sensor_volumes_list), "Please create sensor volumes first")
+    _toggle_flag("show_sensor_volumes", "sensor_volumes",
+                 bool(state.sensor_volumes_list), "message.require.sensor_volumes")
 
 def toggle_obb_boxes(event=None):
-    _toggle_flag("show_obb_boxes", "OBB boxes",
-                 bool(state.face_obbs), "Please generate OBB bounding boxes first")
+    _toggle_flag("show_obb_boxes", "obb_boxes",
+                 bool(state.face_obbs), "message.require.obb")
 
 
 # ---------------------------------------------------------------------------
@@ -1257,77 +1513,115 @@ Usage Instructions:
 
 
 def run():
+    global _language_subscription
     print("=== 3D Model Processing and Path Planning System ===")
     # Print usage to console instead of showing a blocking dialog at startup.
     # Users can access it later via Help -> show_usage_instructions.
     print(USAGE_TEXT_INLINE)
 
-    # File menu
-    add_menu("File")
-    add_function_to_menu("File", import_model)
-    add_function_to_menu("File", clear_model)
-    add_function_to_menu("File", exit_program)
+    # Menu IDs are stable; visible labels are read from the active JSON catalog.
+    _add_translated_menu("File", "menu.file")
+    _add_translated_action("File", import_model, "action.import_model")
+    _add_translated_action("File", clear_model, "action.clear_model")
+    _add_translated_action("File", exit_program, "action.exit_program")
 
     # Model Processing menu
-    add_menu("Model Processing")
-    add_function_to_menu("Model Processing", select_single_face)
-    add_function_to_menu("Model Processing", segment_faces)
-    add_function_to_menu("Model Processing", get_centers)
-    add_function_to_menu("Model Processing", generate_center_viewpoints)
-    add_function_to_menu("Model Processing", generate_candidate_viewpoints)
-    add_function_to_menu("Model Processing", filter_optimal_viewpoints)
-    add_function_to_menu("Model Processing", plan_path)
+    _add_translated_menu("Model Processing", "menu.model_processing")
+    _add_translated_action("Model Processing", select_single_face,
+                           "action.select_single_face")
+    _add_translated_action("Model Processing", segment_faces, "action.segment_faces")
+    _add_translated_action("Model Processing", get_centers, "action.get_centers")
+    _add_translated_action("Model Processing", generate_center_viewpoints,
+                           "action.generate_center_viewpoints")
+    _add_translated_action("Model Processing", generate_candidate_viewpoints,
+                           "action.generate_candidate_viewpoints")
+    _add_translated_action("Model Processing", filter_optimal_viewpoints,
+                           "action.filter_optimal_viewpoints")
+    _add_translated_action("Model Processing", plan_path, "action.plan_path")
 
     # Collision Detection menu
-    add_menu("Collision Detection")
-    add_function_to_menu("Collision Detection", toggle_collision_detection)
-    add_function_to_menu("Collision Detection", set_sensor_parameters)
-    add_function_to_menu("Collision Detection", create_sensor_volumes_ui)
-    add_function_to_menu("Collision Detection", generate_min_bounding_boxes)
-    add_function_to_menu("Collision Detection", execute_collision_detection)
-    add_function_to_menu("Collision Detection", demo_collision_detection)
+    _add_translated_menu("Collision Detection", "menu.collision_detection")
+    _add_translated_action("Collision Detection", toggle_collision_detection,
+                           "action.toggle_collision_detection")
+    _add_translated_action("Collision Detection", set_sensor_parameters,
+                           "action.set_sensor_parameters")
+    _add_translated_action("Collision Detection", create_sensor_volumes_ui,
+                           "action.create_sensor_volumes")
+    _add_translated_action("Collision Detection", generate_min_bounding_boxes,
+                           "action.generate_min_bounding_boxes")
+    _add_translated_action("Collision Detection", execute_collision_detection,
+                           "action.execute_collision_detection")
+    _add_translated_action("Collision Detection", demo_collision_detection,
+                           "action.demo_collision_detection")
 
     # View menu
-    add_menu("View")
-    add_function_to_menu("View", toggle_model_layer)
-    add_function_to_menu("View", toggle_face_centers)
-    add_function_to_menu("View", toggle_normal_lines)
-    add_function_to_menu("View", toggle_all_viewpoints)
-    add_function_to_menu("View", toggle_optimal_viewpoints)
-    add_function_to_menu("View", toggle_planned_path)
-    add_function_to_menu("View", toggle_sensor_volumes)
-    add_function_to_menu("View", toggle_obb_boxes)
-    add_function_to_menu("View", create_workflow_panel_ui)
-    add_function_to_menu("View", create_layer_panel_ui)
+    _add_translated_menu("View", "menu.view")
+    _add_translated_action("View", toggle_model_layer, "action.toggle_model_layer")
+    _add_translated_action("View", toggle_face_centers, "action.toggle_face_centers")
+    _add_translated_action("View", toggle_normal_lines, "action.toggle_normal_lines")
+    _add_translated_action("View", toggle_all_viewpoints, "action.toggle_all_viewpoints")
+    _add_translated_action("View", toggle_optimal_viewpoints,
+                           "action.toggle_optimal_viewpoints")
+    _add_translated_action("View", toggle_planned_path, "action.toggle_planned_path")
+    _add_translated_action("View", toggle_sensor_volumes,
+                           "action.toggle_sensor_volumes")
+    _add_translated_action("View", toggle_obb_boxes, "action.toggle_obb_boxes")
+    _add_translated_action("View", create_workflow_panel_ui,
+                           "action.create_workflow_panel")
+    _add_translated_action("View", create_layer_panel_ui,
+                           "action.create_layer_panel")
 
     # Path Planning menu
-    add_menu("Path Planning")
-    add_function_to_menu("Path Planning", connect_sequentially)
-    add_function_to_menu("Path Planning", solve_with_greedy_algorithm)
-    add_function_to_menu("Path Planning", solve_with_abc_algorithm)
-    add_function_to_menu("Path Planning", solve_with_mscga_algorithm)
+    _add_translated_menu("Path Planning", "menu.path_planning")
+    _add_translated_action("Path Planning", connect_sequentially,
+                           "action.connect_sequentially")
+    _add_translated_action("Path Planning", solve_with_greedy_algorithm,
+                           "action.solve_greedy")
+    _add_translated_action("Path Planning", solve_with_abc_algorithm,
+                           "action.solve_abc")
+    _add_translated_action("Path Planning", solve_with_mscga_algorithm,
+                           "action.solve_mscga")
+    _add_translated_action("Path Planning", import_planned_path_to_robodk,
+                           "action.import_planned_path_robodk")
 
     # Speed Planning menu (must run after path ordering)
-    add_menu("Speed Planning")
-    add_function_to_menu("Speed Planning", plan_path_speeds)
-    add_function_to_menu("Speed Planning", export_speed_plan_to_csv)
-    add_function_to_menu("Speed Planning", import_speed_plan_to_robodk)
+    _add_translated_menu("Speed Planning", "menu.speed_planning")
+    _add_translated_action("Speed Planning", plan_path_speeds,
+                           "action.plan_path_speeds")
+    _add_translated_action("Speed Planning", export_speed_plan_to_csv,
+                           "action.export_speed_plan_csv")
+    _add_translated_action("Speed Planning", import_speed_plan_to_robodk,
+                           "action.import_speed_plan_robodk")
 
     # Calibration menu. A validated T_tool_scanner is required for RoboDK import.
-    add_menu("Calibration")
-    add_function_to_menu("Calibration", load_scanner_tool_extrinsic)
-    add_function_to_menu("Calibration", clear_scanner_tool_extrinsic)
+    _add_translated_menu("Calibration", "menu.calibration")
+    _add_translated_action("Calibration", load_scanner_tool_extrinsic,
+                           "action.load_extrinsic")
+    _add_translated_action("Calibration", clear_scanner_tool_extrinsic,
+                           "action.clear_extrinsic")
 
     # Export menu
-    add_menu("Export")
-    add_function_to_menu("Export", export_path_to_csv)
-    add_function_to_menu("Export", export_speed_plan_to_csv)
+    _add_translated_menu("Export", "menu.export")
+    _add_translated_action("Export", export_path_to_csv, "action.export_path_csv")
+    _add_translated_action("Export", export_speed_plan_to_csv,
+                           "action.export_speed_plan_csv")
+
+    # Language catalog menu. Built-in choices and external UTF-8 JSON are supported.
+    _add_translated_menu("Language", "language.menu")
+    _add_translated_action("Language", switch_to_english, "language.english")
+    _add_translated_action("Language", switch_to_chinese, "language.chinese")
+    _add_translated_action("Language", load_language_json, "language.load_json")
 
     # Help menu
-    add_menu("Help")
-    add_function_to_menu("Help", create_workflow_panel_ui)
-    add_function_to_menu("Help", create_layer_panel_ui)
-    add_function_to_menu("Help", show_usage_instructions)
+    _add_translated_menu("Help", "menu.help")
+    _add_translated_action("Help", create_workflow_panel_ui,
+                           "action.create_workflow_panel")
+    _add_translated_action("Help", create_layer_panel_ui,
+                           "action.create_layer_panel")
+    _add_translated_action("Help", show_usage_instructions, "action.show_usage")
+
+    if _language_subscription is None:
+        _language_subscription = subscribe_language_changed(_retranslate_main_ui)
 
     # Install close-event interceptor
     close_filter = MainWindowCloseEvent(QtWidgets.QApplication.instance())
@@ -1336,6 +1630,18 @@ def run():
     # Create panels by default
     create_workflow_panel_ui()
     create_layer_panel_ui()
+    _retranslate_main_ui()
+
+    # Accept one local STEP/IGES model dropped directly on the 3D canvas.
+    window = get_main_window()
+    viewer = getattr(window, "canva", None) if window is not None else None
+    if viewer is not None:
+        install_model_drop_support(
+            QtCore, viewer, import_model_from_path,
+            show_error=lambda message: show_topmost_message(
+                tr("file.import_model.title"), message, type="error"),
+            set_status=set_status_message,
+            translate=tr)
 
     global _app_ready
     _app_ready = True

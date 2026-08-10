@@ -6,6 +6,12 @@ can be imported before ``init_display()`` is called.
 
 from dataclasses import dataclass, field
 
+from config import (
+    DEFAULT_SEGMENT_U, DEFAULT_SEGMENT_V,
+    SCANNER_SAFE_PATCH_X_MM, SCANNER_SAFE_PATCH_Y_MM,
+)
+from i18n import tr
+
 
 # ---------------------------------------------------------------------------
 # Workflow step status constants
@@ -92,36 +98,29 @@ def build_workflow_snapshot(state):
 
 def format_workflow_snapshot(snap):
     """Format a WorkflowSnapshot for display."""
-    return (
-        "Workflow Status\n"
-        "Model loaded: {}\n"
-        "Selected face: {}\n"
-        "Segmented patches: {}\n"
-        "Patch centers: {}\n"
-        "Center viewpoints: {}\n"
-        "All viewpoints: {}\n"
-        "Optimal viewpoints: {}\n"
-        "Sensor volumes: {}\n"
-        "OBB boxes: {}\n"
-        "Collision checked: {}\n"
-        "Path points: {}\n"
-        "Path length: {:.4f}\n"
-        "Speed plan points: {}\n"
-        "Planned scan time: {:.4f} s\n"
-        "Speed constraints feasible: {}\n"
-        "RoboDK program: {}"
-    ).format(
-        'Yes' if snap.model_loaded else 'No',
-        'Yes' if snap.selected_face else 'No',
-        snap.patches, snap.centers, snap.center_viewpoints,
-        snap.all_viewpoints, snap.optimal_viewpoints,
-        snap.sensor_volumes, snap.obb_boxes,
-        'Yes' if snap.collisions_executed else 'No',
-        snap.path_points, snap.path_length,
-        snap.speed_points, snap.speed_total_time,
-        'Yes' if snap.speed_feasible else 'No',
-        snap.robodk_program or '-',
-    )
+    yes = tr("common.yes")
+    no = tr("common.no")
+    return "\n".join([
+        tr("workflow.heading"),
+        tr("workflow.model_loaded", value=yes if snap.model_loaded else no),
+        tr("workflow.selected_face", value=yes if snap.selected_face else no),
+        tr("workflow.segmented_patches", count=snap.patches),
+        tr("workflow.patch_centers", count=snap.centers),
+        tr("workflow.center_viewpoints", count=snap.center_viewpoints),
+        tr("workflow.all_viewpoints", count=snap.all_viewpoints),
+        tr("workflow.optimal_viewpoints", count=snap.optimal_viewpoints),
+        tr("workflow.sensor_volumes", count=snap.sensor_volumes),
+        tr("workflow.obb_boxes", count=snap.obb_boxes),
+        tr("workflow.collision_checked",
+           value=yes if snap.collisions_executed else no),
+        tr("workflow.path_points", count=snap.path_points),
+        tr("workflow.path_length", length=snap.path_length),
+        tr("workflow.speed_points", count=snap.speed_points),
+        tr("workflow.scan_time", seconds=snap.speed_total_time),
+        tr("workflow.speed_feasible", value=yes if snap.speed_feasible else no),
+        tr("workflow.robodk_program",
+           program=snap.robodk_program or tr("common.not_available")),
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -135,21 +134,44 @@ def _get_qt():
     return QtCore, QtWidgets
 
 
+def _translate_dialog_buttons(QtWidgets, buttons):
+    """Apply the active JSON catalog to persistent standard button labels."""
+    for standard_button, key in (
+            (QtWidgets.QDialogButtonBox.Ok, "common.ok"),
+            (QtWidgets.QDialogButtonBox.Cancel, "common.cancel")):
+        button = buttons.button(standard_button)
+        if button is not None:
+            button.setText(tr(key))
+
+
+_main_window_cache = None
+
+
 def get_main_window():
     """Find the pythonOCC main window."""
+    global _main_window_cache
     try:
         QtCore, QtWidgets = _get_qt()
         app = QtWidgets.QApplication.instance()
         if not app:
             return None
-        titles = []
+        if _main_window_cache is not None:
+            try:
+                if _main_window_cache.objectName() == "MainWindow":
+                    return _main_window_cache
+            except RuntimeError:
+                _main_window_cache = None
         for widget in app.topLevelWidgets():
+            if (hasattr(widget, "objectName")
+                    and widget.objectName() == "MainWindow"):
+                _main_window_cache = widget
+                return widget
             if hasattr(widget, "windowTitle"):
                 title = widget.windowTitle()
-                titles.append(title)
                 if ("3D Model Processing" in title
                         or "pythonOCC" in title
                         or "3D Viewer" in title):
+                    _main_window_cache = widget
                     return widget
     except Exception as e:
         pass
@@ -195,6 +217,17 @@ def show_topmost_message(title, message, type="info"):
         msg.setIcon(QMessageBox.Question)
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
 
+    button_text = {
+        QMessageBox.Ok: tr("common.ok"),
+        QMessageBox.Yes: tr("common.yes"),
+        QMessageBox.No: tr("common.no"),
+        QMessageBox.Cancel: tr("common.cancel"),
+    }
+    for standard_button, text in button_text.items():
+        button = msg.button(standard_button)
+        if button is not None:
+            button.setText(text)
+
     result = (getattr(msg, "exec", None) or getattr(msg, "exec_"))()
     if type == "question":
         return "yes" if result == QMessageBox.Yes else "no"
@@ -229,7 +262,7 @@ def create_workflow_panel():
     global _workflow_dock, _workflow_status_label
 
     if _workflow_dock is not None:
-        update_workflow_status("Workflow panel already available")
+        update_workflow_status(tr("workflow.panel_exists"))
         return
 
     QtCore, QtWidgets = _get_qt()
@@ -237,7 +270,7 @@ def create_workflow_panel():
     if not main_window or not hasattr(main_window, "addDockWidget"):
         return
 
-    _workflow_dock = QtWidgets.QDockWidget("Workflow", main_window)
+    _workflow_dock = QtWidgets.QDockWidget(tr("dock.workflow.title"), main_window)
     _workflow_dock.setObjectName("WorkflowStatusDock")
     _workflow_dock.setAllowedAreas(
         QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
@@ -250,7 +283,7 @@ def create_workflow_panel():
 
     _workflow_dock.setWidget(_workflow_status_label)
     main_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, _workflow_dock)
-    update_workflow_status("Ready")
+    update_workflow_status(tr("common.ready"))
 
 
 def update_workflow_status(message=None, state=None):
@@ -288,7 +321,7 @@ def create_layer_panel(toggle_callbacks):
     if not main_window or not hasattr(main_window, "addDockWidget"):
         return
 
-    _layer_dock = QtWidgets.QDockWidget("Layers", main_window)
+    _layer_dock = QtWidgets.QDockWidget(tr("dock.layers.title"), main_window)
     _layer_dock.setObjectName("LayerControlDock")
     _layer_dock.setAllowedAreas(
         QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
@@ -299,17 +332,11 @@ def create_layer_panel(toggle_callbacks):
     layout.setSpacing(6)
 
     _layer_checkboxes = {}
-    for key, label in [
-        ("model", "Model / patches"),
-        ("face_centers", "Face centers"),
-        ("normal_lines", "Normal lines"),
-        ("all_viewpoints", "All viewpoints"),
-        ("optimal_viewpoints", "Optimal viewpoints"),
-        ("planned_path", "Planned path"),
-        ("sensor_volumes", "Sensor volumes"),
-        ("obb_boxes", "OBB boxes"),
+    for key in [
+        "model", "face_centers", "normal_lines", "all_viewpoints",
+        "optimal_viewpoints", "planned_path", "sensor_volumes", "obb_boxes",
     ]:
-        cb = QtWidgets.QCheckBox(label)
+        cb = QtWidgets.QCheckBox(tr("layer." + key))
         cb.setChecked(True)
         callback = toggle_callbacks.get(key)
         if callback:
@@ -333,6 +360,18 @@ def sync_layer_panel(vis_flags):
         cb.blockSignals(prev)
 
 
+def retranslate_panels(state=None):
+    """Retranslate persistent docks without recreating widgets or state."""
+    if _workflow_dock is not None:
+        _workflow_dock.setWindowTitle(tr("dock.workflow.title"))
+    if _layer_dock is not None:
+        _layer_dock.setWindowTitle(tr("dock.layers.title"))
+    for key, checkbox in _layer_checkboxes.items():
+        checkbox.setText(tr("layer." + key))
+    if state is not None:
+        update_workflow_status(state=state)
+
+
 # ---------------------------------------------------------------------------
 # Parameter dialogs
 # ---------------------------------------------------------------------------
@@ -350,34 +389,41 @@ def get_user_segment_params(parent=None):
             parent = get_main_window()
 
         dialog = QtWidgets.QDialog(parent)
-        dialog.setWindowTitle("Segmentation Parameters")
+        dialog.setWindowTitle(tr("dialog.segment.title"))
         layout = QtWidgets.QFormLayout(dialog)
 
         u_spin = QtWidgets.QSpinBox()
         u_spin.setRange(1, 100)
-        u_spin.setValue(6)
+        u_spin.setValue(DEFAULT_SEGMENT_U)
         v_spin = QtWidgets.QSpinBox()
         v_spin.setRange(1, 100)
-        v_spin.setValue(4)
+        v_spin.setValue(DEFAULT_SEGMENT_V)
 
         preview_label = QtWidgets.QLabel()
 
         def update_preview():
             preview_label.setText(
-                "Requested maximum grid per original face: {} "
-                "(trimmed/periodic faces may produce fewer valid patches)".format(
-                    u_spin.value() * v_spin.value()))
+                tr(
+                    "dialog.segment.preview",
+                    u=u_spin.value(), v=v_spin.value(),
+                    count=u_spin.value() * v_spin.value(),
+                    default_u=DEFAULT_SEGMENT_U,
+                    default_v=DEFAULT_SEGMENT_V,
+                    safe_x=SCANNER_SAFE_PATCH_X_MM,
+                    safe_y=SCANNER_SAFE_PATCH_Y_MM))
+            preview_label.setWordWrap(True)
 
         u_spin.valueChanged.connect(update_preview)
         v_spin.valueChanged.connect(update_preview)
         update_preview()
 
-        layout.addRow("U segments:", u_spin)
-        layout.addRow("V segments:", v_spin)
-        layout.addRow("Preview:", preview_label)
+        layout.addRow(tr("dialog.segment.u"), u_spin)
+        layout.addRow(tr("dialog.segment.v"), v_spin)
+        layout.addRow(tr("dialog.segment.preview_label"), preview_label)
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        _translate_dialog_buttons(QtWidgets, buttons)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
@@ -391,7 +437,7 @@ def get_user_segment_params(parent=None):
         return u, v
     except Exception as e:
         print("Error getting segmentation parameters: {}".format(str(e)))
-        return 6, 4
+        return DEFAULT_SEGMENT_U, DEFAULT_SEGMENT_V
 
 
 def get_sensor_parameters_dialog(parent=None, current_config=None):
@@ -413,7 +459,7 @@ def get_sensor_parameters_dialog(parent=None, current_config=None):
             current_config = {'width': 80, 'height': 60, 'depth': 80}
 
         dialog = QtWidgets.QDialog(parent)
-        dialog.setWindowTitle("Sensor Parameters")
+        dialog.setWindowTitle(tr("dialog.sensor.title"))
         layout = QtWidgets.QFormLayout(dialog)
 
         spins = {}
@@ -423,11 +469,12 @@ def get_sensor_parameters_dialog(parent=None, current_config=None):
             s.setDecimals(2)
             s.setSingleStep(5.0)
             s.setValue(float(current_config.get(key, 80)))
-            layout.addRow(key.capitalize() + ":", s)
+            layout.addRow(tr("dialog.sensor." + key), s)
             spins[key] = s
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        _translate_dialog_buttons(QtWidgets, buttons)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
@@ -438,9 +485,10 @@ def get_sensor_parameters_dialog(parent=None, current_config=None):
         return {k: spins[k].value() for k in ("width", "height", "depth")}
     except Exception as e:
         print("Error setting sensor parameters: {}".format(str(e)))
-        show_topmost_message("Error",
-                             "Error setting sensor parameters: {}".format(str(e)),
-                             type="error")
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.sensor.parameters_failed", error=e),
+            type="error")
         return None
 
 
@@ -466,4 +514,4 @@ Usage Instructions:
 
 
 def show_usage_instructions():
-    show_topmost_message("Usage Instructions", USAGE_TEXT)
+    show_topmost_message(tr("help.usage_title"), tr("help.usage_text"))

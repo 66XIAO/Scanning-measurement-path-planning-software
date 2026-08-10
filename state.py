@@ -26,6 +26,9 @@ class AppState:
     # Model state
     current_shape: object = None
     current_faces: list = field(default_factory=list)
+    # Non-BRep patch records used by trim-aware mesh-grid segmentation.  The
+    # legacy current_faces list remains populated for downstream compatibility.
+    surface_patches: list = field(default_factory=list)
     last_segmentation_diagnostics: dict = field(default_factory=dict)
     selected_face: object = None
     original_face_normal: object = None
@@ -97,6 +100,7 @@ class AppState:
     def reset_all(self):
         self.current_shape = None
         self.current_faces.clear()
+        self.surface_patches.clear()
         self.last_segmentation_diagnostics.clear()
         self.selected_face = None
         self.original_face_normal = None

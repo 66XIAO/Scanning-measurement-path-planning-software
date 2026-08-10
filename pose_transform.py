@@ -36,6 +36,7 @@ class ExtrinsicConfig:
     mapping_mode: str
     t_tool_scanner: Optional[MatrixTuple] = None
     t_flange_scanner: Optional[MatrixTuple] = None
+    t_flange_tool: Optional[MatrixTuple] = None
     schema_version: str = SCHEMA_VERSION
     source_pose_frame: str = "scanner"
     command_pose_frame: str = "scanner_tcp"
@@ -77,6 +78,7 @@ class ExtrinsicConfig:
             "quaternion_order": self.quaternion_order,
             "T_tool_scanner": _rows_or_none(self.t_tool_scanner),
             "T_flange_scanner": _rows_or_none(self.t_flange_scanner),
+            "T_flange_tool": _rows_or_none(self.t_flange_tool),
             "robodk_station_name": self.robodk_station_name,
             "robodk_robot_name": self.robodk_robot_name,
             "robodk_tool_name": self.robodk_tool_name,
@@ -144,6 +146,11 @@ def parse_extrinsic_config(data: Dict[str, object]) -> ExtrinsicConfig:
         data, "T_tool_scanner", mode == "separate_tool_frame")
     t_flange_scanner = _matrix_value(
         data, "T_flange_scanner", mode == "robodk_tcp_is_scanner")
+    # Kept optional while parsing so existing separate-tool calibration files
+    # remain usable for planning/export.  RoboDK import requires this matrix
+    # and verifies it against the selected station Tool before publishing a
+    # program; see robodk_bridge._verify_tool_mapping.
+    t_flange_tool = _matrix_value(data, "T_flange_tool", False)
     t_station_reference_frame = _matrix_value(
         data, "T_station_reference_frame", False)
     tool_name = str(data.get("robodk_tool_name", "")).strip()
@@ -163,6 +170,7 @@ def parse_extrinsic_config(data: Dict[str, object]) -> ExtrinsicConfig:
         mapping_mode=mode,
         t_tool_scanner=t_tool_scanner,
         t_flange_scanner=t_flange_scanner,
+        t_flange_tool=t_flange_tool,
         command_pose_frame=expected_command_frame,
         robodk_station_name=str(data.get("robodk_station_name", "")).strip(),
         robodk_robot_name=str(data.get("robodk_robot_name", "")).strip(),
@@ -274,6 +282,7 @@ def transform_pose_records(records: Iterable[Dict[str, object]],
         "command_pose_frame": config.command_pose_frame,
         "T_tool_scanner": _rows_or_none(config.t_tool_scanner),
         "T_flange_scanner": _rows_or_none(config.t_flange_scanner),
+        "T_flange_tool": _rows_or_none(config.t_flange_tool),
         "expected_robodk_station_name": config.robodk_station_name,
         "expected_robodk_robot_name": config.robodk_robot_name,
         "expected_robodk_tool_name": config.robodk_tool_name,
