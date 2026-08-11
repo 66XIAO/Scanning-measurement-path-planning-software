@@ -10,7 +10,12 @@ from OCC.Core.gp import gp_Pnt
 from OCC.Display.OCCViewer import rgb_color
 from dataclasses import dataclass
 
-from geometry import calculate_face_normal, display_coordinate_system, ConvertBndToShape
+from geometry import (
+    ConvertBndToShape,
+    calculate_face_normal,
+    display_coordinate_system,
+    display_workpiece_coordinate_system,
+)
 from config import NUM_CANDIDATES_PER_FACE
 from surface_segmentation import is_surface_patch
 
@@ -22,6 +27,7 @@ from surface_segmentation import is_surface_patch
 @dataclass
 class LayerVisibility:
     model: bool = True
+    workpiece_coordinate_system: bool = True
     face_centers: bool = True
     normal_lines: bool = True
     all_viewpoints: bool = True
@@ -45,7 +51,9 @@ def render_scene(display, vis, current_shape, current_faces,
                  face_centers, face_normals, center_view_points,
                  view_points, optimal_viewpoints, optimal_path,
                  sensor_volumes_list, face_obbs,
-                 coordinate_systems, optimal_path_objects,
+                 workpiece_coordinate_system_size,
+                 workpiece_coordinate_system_objects, coordinate_systems,
+                 optimal_path_objects,
                  sensor_volume_objects, obb_visualizations,
                  fit_all=True):
     """Redraw the entire scene from current state and visibility flags.
@@ -55,10 +63,11 @@ def render_scene(display, vis, current_shape, current_faces,
 
     Returns
     -------
-    tuple of (coordinate_systems, optimal_path_objects, sensor_volume_objects, obb_visualizations)
+    Display-handle collections are updated in place.
     """
     try:
         display.EraseAll()
+        workpiece_coordinate_system_objects.clear()
         coordinate_systems.clear()
         optimal_path_objects.clear()
         sensor_volume_objects.clear()
@@ -156,6 +165,16 @@ def render_scene(display, vis, current_shape, current_faces,
 
         if fit_all:
             display.FitAll()
+
+        # Draw the CAD-global frame after fitting the model. Combined with
+        # InfiniteState this prevents a distant CAD origin from changing the
+        # model's automatic zoom range.
+        if vis.workpiece_coordinate_system and current_shape is not None:
+            trihedron = display_workpiece_coordinate_system(
+                display, shape=current_shape,
+                size=(workpiece_coordinate_system_size or None))
+            if trihedron is not None:
+                workpiece_coordinate_system_objects.append(trihedron)
         display.Repaint()
 
     except Exception as e:

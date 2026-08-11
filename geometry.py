@@ -11,8 +11,8 @@ from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.GProp import GProp_GProps
-from OCC.Core.BRepBndLib import brepbndlib_AddOBB
-from OCC.Core.Bnd import Bnd_OBB
+from OCC.Core.BRepBndLib import brepbndlib, brepbndlib_AddOBB
+from OCC.Core.Bnd import Bnd_Box, Bnd_OBB
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeSphere
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
 from OCC.Core.ShapeAnalysis import ShapeAnalysis_Surface
@@ -165,6 +165,60 @@ def generate_viewpoint(center, normal, distance=300.0):
 # ---------------------------------------------------------------------------
 # Coordinate-system display
 # ---------------------------------------------------------------------------
+
+def calculate_workpiece_coordinate_size(shape, ratio=0.08, fallback=50.0):
+    """Return an axis size proportional to the imported CAD bounding box.
+
+    The value uses the same units as the CAD model. No absolute clamp is
+    applied, so the visual remains scale-independent for models authored in
+    millimetres, metres, or another consistent unit system.
+    """
+    try:
+        if shape is None:
+            return float(fallback)
+        bounds = Bnd_Box()
+        brepbndlib.Add(shape, bounds)
+        if bounds.IsVoid():
+            return float(fallback)
+        x_min, y_min, z_min, x_max, y_max, z_max = bounds.Get()
+        diagonal = math.sqrt(
+            (x_max - x_min) ** 2
+            + (y_max - y_min) ** 2
+            + (z_max - z_min) ** 2)
+        size = diagonal * float(ratio)
+        if math.isfinite(size) and size > 1.0e-9:
+            return size
+    except Exception as e:
+        print("Error calculating workpiece coordinate size: {}".format(str(e)))
+    return float(fallback)
+
+
+def display_workpiece_coordinate_system(display, shape=None, size=None):
+    """Display the imported CAD global frame at the true origin.
+
+    This trihedron is fixed at ``(0, 0, 0)`` with canonical X/Y/Z axes. It is
+    marked infinite so it does not enlarge ``FitAll`` bounds, and its selection
+    modes are deactivated without changing the viewer's global auto-selection
+    policy.
+    """
+    try:
+        axis_size = (
+            calculate_workpiece_coordinate_size(shape)
+            if size is None else float(size))
+        ax2 = gp_Ax2(gp_Pnt(0.0, 0.0, 0.0),
+                     gp_Dir(0.0, 0.0, 1.0),
+                     gp_Dir(1.0, 0.0, 0.0))
+        trihedron = AIS_Trihedron(Geom_Axis2Placement(ax2))
+        trihedron.SetSize(axis_size)
+        trihedron.SetInfiniteState(True)
+
+        ctx = display.Context
+        ctx.Display(trihedron, False)
+        ctx.Deactivate(trihedron)
+        return trihedron
+    except Exception as e:
+        print("Error creating workpiece coordinate system: {}".format(str(e)))
+        return None
 
 def display_coordinate_system(display, position, normal, size=50.0, center=None):
     """Display a small trihedron at *position* and return its AIS handle.

@@ -25,7 +25,8 @@ from OCC.Display.backend import get_qt_modules
 from config import VIEWPOINT_DISTANCE, NUM_CANDIDATES_PER_FACE, ZENITH_ANGLE_DEG
 from state import AppState
 from geometry import (
-    calculate_face_normal, segment_model, generate_viewpoint,
+    calculate_face_normal, calculate_workpiece_coordinate_size,
+    segment_model, generate_viewpoint,
     display_coordinate_system, generate_face_obb, ConvertBndToShape,
 )
 from viewpoints import (
@@ -163,6 +164,7 @@ def _do_render(fit_all=True):
     """Centralised scene redraw from current *state*."""
     vis = LayerVisibility(
         model=state.show_model,
+        workpiece_coordinate_system=state.show_workpiece_coordinate_system,
         face_centers=state.show_face_centers,
         normal_lines=state.show_normal_lines,
         all_viewpoints=state.show_all_viewpoints,
@@ -178,7 +180,9 @@ def _do_render(fit_all=True):
         state.center_view_points, state.view_points,
         state.optimal_viewpoints, state.optimal_path,
         state.sensor_volumes_list, state.face_obbs,
-        state.coordinate_systems, state.optimal_path_objects,
+        state.workpiece_coordinate_system_size,
+        state.workpiece_coordinate_system_objects, state.coordinate_systems,
+        state.optimal_path_objects,
         state.sensor_volume_objects, state.obb_visualizations,
         fit_all=fit_all,
     )
@@ -191,6 +195,7 @@ def _update_workflow(message=None):
 def _sync_layer():
     _sync_layer_panel({
         "model": state.show_model,
+        "workpiece_coordinate_system": state.show_workpiece_coordinate_system,
         "face_centers": state.show_face_centers,
         "normal_lines": state.show_normal_lines,
         "all_viewpoints": state.show_all_viewpoints,
@@ -339,19 +344,21 @@ def import_model_from_path(file_path):
         return
 
     def load_shape():
-        return load_cad_shape(file_path)
+        shape = load_cad_shape(file_path)
+        axis_size = calculate_workpiece_coordinate_size(shape)
+        return shape, axis_size
 
-    def on_success(new_shape):
+    def on_success(import_result):
         global path_planning_prompt_confirmed
+        new_shape, axis_size = import_result
         # Commit atomically only after parsing succeeds. Cancelling or a read
         # error leaves the previously loaded model and downstream state intact.
         display.EraseAll()
         state.reset_all()
         state.current_shape = new_shape
+        state.workpiece_coordinate_system_size = axis_size
         path_planning_prompt_confirmed = False
-        display.DisplayShape(new_shape, color=rgb_color(0.7, 0.7, 0.7))
-        display.FitAll()
-        display.Repaint()
+        _do_render()
         _sync_layer()
         _update_workflow(tr(
             "message.import.success", filename=os.path.basename(file_path)))
@@ -499,26 +506,7 @@ def segment_faces(event=None):
             state.surface_patches = [face for face in faces if is_surface_patch(face)]
             state.invalidate_after_segmentation()
             state.last_segmentation_diagnostics = diagnostics
-            display.EraseAll()
-            colors = [
-                rgb_color(0.8, 0.8, 1.0), rgb_color(1.0, 0.8, 0.8),
-                rgb_color(0.8, 1.0, 0.8), rgb_color(1.0, 1.0, 0.8),
-            ]
-            if state.surface_patches:
-                # Mesh-grid patches retain the exact source BRep. Display the
-                # source surface and overlay each connected patch representative.
-                display.DisplayShape(
-                    state.current_shape, color=rgb_color(0.7, 0.7, 0.7),
-                    transparency=0.35, update=False)
-                for i, patch in enumerate(state.surface_patches):
-                    display.DisplayShape(
-                        patch.center, color=colors[i % len(colors)], update=False)
-            else:
-                for i, face in enumerate(state.current_faces):
-                    display.DisplayShape(
-                        face, color=colors[i % len(colors)], update=False)
-            display.FitAll()
-            display.Repaint()
+            _do_render()
             strategy = diagnostics.get("strategy", "equal_param")
             print("Segmentation complete: {} patches (u={}, v={}, strategy={}), "
                   "area ratio {:.6f}".format(
@@ -1440,6 +1428,11 @@ def toggle_model_layer(event=None):
     _toggle_flag("show_model", "model",
                  state.current_shape is not None, "message.require.model")
 
+def toggle_workpiece_coordinate_system(event=None):
+    _toggle_flag(
+        "show_workpiece_coordinate_system", "workpiece_coordinate_system",
+        state.current_shape is not None, "message.require.model")
+
 def toggle_face_centers(event=None):
     _toggle_flag("show_face_centers", "face_centers",
                  bool(state.face_centers), "message.require.centers")
@@ -1480,6 +1473,7 @@ def create_workflow_panel_ui(event=None):
 def create_layer_panel_ui(event=None):
     create_layer_panel({
         "model": toggle_model_layer,
+        "workpiece_coordinate_system": toggle_workpiece_coordinate_system,
         "face_centers": toggle_face_centers,
         "normal_lines": toggle_normal_lines,
         "all_viewpoints": toggle_all_viewpoints,
@@ -1557,6 +1551,9 @@ def run():
     # View menu
     _add_translated_menu("View", "menu.view")
     _add_translated_action("View", toggle_model_layer, "action.toggle_model_layer")
+    _add_translated_action(
+        "View", toggle_workpiece_coordinate_system,
+        "action.toggle_workpiece_coordinate_system")
     _add_translated_action("View", toggle_face_centers, "action.toggle_face_centers")
     _add_translated_action("View", toggle_normal_lines, "action.toggle_normal_lines")
     _add_translated_action("View", toggle_all_viewpoints, "action.toggle_all_viewpoints")

@@ -333,7 +333,8 @@ def create_layer_panel(toggle_callbacks):
 
     _layer_checkboxes = {}
     for key in [
-        "model", "face_centers", "normal_lines", "all_viewpoints",
+        "model", "workpiece_coordinate_system", "face_centers",
+        "normal_lines", "all_viewpoints",
         "optimal_viewpoints", "planned_path", "sensor_volumes", "obb_boxes",
     ]:
         cb = QtWidgets.QCheckBox(tr("layer." + key))

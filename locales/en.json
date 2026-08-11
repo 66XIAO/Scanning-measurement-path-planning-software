@@ -58,6 +58,7 @@
     "action.execute_collision_detection": "Execute collision detection",
     "action.demo_collision_detection": "Demo collision detection",
     "action.toggle_model_layer": "Show / hide model",
+    "action.toggle_workpiece_coordinate_system": "Show / hide workpiece coordinate system",
     "action.toggle_face_centers": "Show / hide face centers",
     "action.toggle_normal_lines": "Show / hide normal lines",
     "action.toggle_all_viewpoints": "Show / hide all viewpoints",
@@ -131,6 +132,7 @@
     "workflow.status.error": "Error",
 
     "layer.model": "Model / patches",
+    "layer.workpiece_coordinate_system": "Workpiece coordinate system",
     "layer.face_centers": "Face centers",
     "layer.normal_lines": "Normal lines",
     "layer.all_viewpoints": "All viewpoints",

@@ -67,6 +67,8 @@ class AppState:
     face_obbs: list = field(default_factory=list)
 
     # Visual objects (display handles)
+    workpiece_coordinate_system_size: float = 0.0
+    workpiece_coordinate_system_objects: list = field(default_factory=list)
     coordinate_systems: list = field(default_factory=list)
     normal_line_objects: list = field(default_factory=list)
     optimal_path_objects: list = field(default_factory=list)
@@ -78,6 +80,7 @@ class AppState:
 
     # Visibility flags
     show_model: bool = True
+    show_workpiece_coordinate_system: bool = True
     show_face_centers: bool = True
     show_normal_lines: bool = True
     show_all_viewpoints: bool = True
@@ -119,6 +122,8 @@ class AppState:
         self.last_robodk_import.clear()
         self.sensor_volumes_list.clear()
         self.face_obbs.clear()
+        self.workpiece_coordinate_system_size = 0.0
+        self.workpiece_coordinate_system_objects.clear()
         self.coordinate_systems.clear()
         self.normal_line_objects.clear()
         self.optimal_path_objects.clear()

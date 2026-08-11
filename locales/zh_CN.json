@@ -58,6 +58,7 @@
     "action.execute_collision_detection": "执行碰撞检测",
     "action.demo_collision_detection": "演示碰撞检测",
     "action.toggle_model_layer": "显示 / 隐藏模型",
+    "action.toggle_workpiece_coordinate_system": "显示 / 隐藏工件坐标系",
     "action.toggle_face_centers": "显示 / 隐藏面片中心",
     "action.toggle_normal_lines": "显示 / 隐藏法线",
     "action.toggle_all_viewpoints": "显示 / 隐藏全部视点",
@@ -131,6 +132,7 @@
     "workflow.status.error": "错误",
 
     "layer.model": "模型 / 面片",
+    "layer.workpiece_coordinate_system": "工件坐标系",
     "layer.face_centers": "面片中心",
     "layer.normal_lines": "法线",
     "layer.all_viewpoints": "全部视点",
