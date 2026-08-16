@@ -21,6 +21,7 @@
     "common.shown": "显示",
     "common.hidden": "隐藏",
     "common.not_available": "-",
+    "common.none": "无",
 
     "language.menu": "语言",
     "language.english": "English",
@@ -75,6 +76,7 @@
     "action.plan_path_speeds": "规划路径速度",
     "action.export_speed_plan_csv": "导出速度规划 CSV",
     "action.import_planned_path_robodk": "将规划路径导入 RoboDK",
+    "action.analyze_ur10_reachability": "检查 UR10 路径可达性",
     "action.import_speed_plan_robodk": "将速度规划导入 RoboDK",
     "action.capture_robodk_mapping": "读取当前 RoboDK 工作站坐标关系...",
     "action.load_extrinsic": "加载扫描仪到工具的外参",
@@ -183,6 +185,7 @@
 
     "dialog.robodk.speed_title": "将速度规划导入 RoboDK",
     "dialog.robodk.path_title": "将规划路径导入 RoboDK",
+    "dialog.robodk.reachability_title": "UR10 路径可达性检查",
     "dialog.robodk.mapping_title": "读取当前 RoboDK 工作站坐标关系",
     "dialog.robodk.mapping_explanation": "此操作仅读取数据。所选 Tool 将被视为扫描仪 TCP；不会创建目标点、程序或机器人运动。",
     "dialog.robodk.robot": "机器人",
@@ -287,6 +290,14 @@
     "message.robodk.complete": "RoboDK 导入完成：程序={program}，位姿={poses}，指令={instructions}",
     "message.robodk.path_failed": "RoboDK 规划路径导入失败：\n{error}",
     "message.robodk.speed_failed": "RoboDK 速度规划导入失败：\n{error}",
+    "message.robodk.reachability_running": "正在使用当前 RoboDK UR10 模型计算全部逆解并检查可达性…",
+    "message.robodk.reachability_calibration_required": "可达性检查需要已验证且包含 T_base_workpiece 的工作站坐标关系 JSON。",
+    "message.robodk.reachability_complete": "UR10 可达性检查完成：总点数={total}，可达={reachable}，不可达={unreachable}\n可达点序号：{reachable_indices}\n不可达点及原因：{unreachable_details}",
+    "message.robodk.reachability_reason.no_ik_solution": "RoboDK 未返回逆解",
+    "message.robodk.reachability_reason.joint_limits": "逆解均超出模型关节限位",
+    "message.robodk.reachability_reason.fk_residual": "正解回验残差超限",
+    "message.robodk.reachability_boundary": "结果仅验证 RoboDK 机器人模型逆解、模型关节限位及正解残差；不代表已完成碰撞、动力学、实体标定或真实机器人安全验证。",
+    "message.robodk.reachability_failed": "UR10 路径可达性检查失败：\n{error}",
     "message.layer_toggled": "{layer}：{state}",
 
     "drop.issue.local_only": "只能导入本地文件（收到 {scheme} URI）",

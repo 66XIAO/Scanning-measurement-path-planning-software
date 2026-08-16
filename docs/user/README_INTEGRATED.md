@@ -12,11 +12,14 @@ post-path constrained speed planning and RoboDK program generation.
 4. Use **Calibration -> Read current RoboDK station mapping...** to capture the
    open station's Base/workpiece/scanner-TCP transforms, or load an existing
    validated scanner/tool mapping.
-5. Optionally use **Path Planning -> Import planned path to RoboDK** to create a
+5. Use **Path Planning -> Check UR10 path reachability** to evaluate all path
+   poses with the current RoboDK UR10 model, its joint limits, and an FK
+   residual check. This operation is read-only.
+6. Optionally use **Path Planning -> Import planned path to RoboDK** to create a
    movement-only program for checking the ordered poses before speed planning.
-6. Open **Speed Planning -> Plan path speeds**.
-7. Choose the deterministic baseline or thesis-style Double Q mode.
-8. Export Pose+Speed CSV or import the speed plan directly to RoboDK.
+7. Open **Speed Planning -> Plan path speeds**.
+8. Choose the deterministic baseline or thesis-style Double Q mode.
+9. Export Pose+Speed CSV or import the speed plan directly to RoboDK.
 
 The **Language** menu switches the live UI between English and Simplified
 Chinese. Text is read from UTF-8 JSON catalogs in `locales/`; **Load language
@@ -63,6 +66,14 @@ The capture action also stores `T_station_robot_base` and rejects a file unless
 `T_base_workpiece`. Capturing is read-only and marks the result
 `station_verified`; it is not physical scanner/CAD calibration.
 
+UR10 reachability reuses the robot-model APIs built into RoboDK rather than the
+Universal Robots postprocessor. For each command TCP pose it evaluates
+`T_base_flange = T_base_workpiece * T_workpiece_tcp * inverse(T_flange_tcp)`,
+calls `SolveIK_All`, filters solutions using `JointLimits`, selects a branch
+near the previous joints, and verifies it with `SolveFK`. It creates no station
+objects and does not move the robot. Collision, dynamics and real-hardware
+safety remain separate acceptance gates.
+
 ## Start without installing packages
 
 For normal use, double-click `start_software.cmd` in the repository root. It
@@ -94,10 +105,11 @@ $env:PATH="$prefix;$prefix\Library\bin;$prefix\Scripts;$env:PATH"
 The current planner enforces TCP/geometric speed, acceleration, curvature and
 orientation-rate constraints. It does **not** yet claim robot dynamic validity.
 The configured joint speed/acceleration values are RoboDK command limits, not
-the result of inverse-kinematics or dynamics validation.
-Before production execution, configure scanner-to-tool extrinsics and validate
-IK branch continuity, joint speed, joint acceleration and joint torque against
-the real robot model.
+the result of dynamics validation. The new reachability report validates pose
+IK and model joint limits, and records a continuity-oriented branch candidate;
+it does not yet validate the resulting joint-speed, joint-acceleration or torque
+trajectory. Before production execution, validate those quantities, collision
+clearance and the physical scanner installation against the real system.
 
 RoboDK import also requires a validated scanner-to-tool calibration. The
 example identity matrix is format documentation only and does not unlock import.

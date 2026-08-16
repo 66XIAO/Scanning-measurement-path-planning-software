@@ -21,6 +21,7 @@
     "common.shown": "shown",
     "common.hidden": "hidden",
     "common.not_available": "-",
+    "common.none": "None",
 
     "language.menu": "Language",
     "language.english": "English",
@@ -75,6 +76,7 @@
     "action.plan_path_speeds": "Plan path speeds",
     "action.export_speed_plan_csv": "Export speed plan to CSV",
     "action.import_planned_path_robodk": "Import planned path to RoboDK",
+    "action.analyze_ur10_reachability": "Check UR10 path reachability",
     "action.import_speed_plan_robodk": "Import speed plan to RoboDK",
     "action.capture_robodk_mapping": "Read current RoboDK station mapping...",
     "action.load_extrinsic": "Load scanner-to-tool extrinsic",
@@ -183,6 +185,7 @@
 
     "dialog.robodk.speed_title": "Import Speed Plan to RoboDK",
     "dialog.robodk.path_title": "Import Planned Path to RoboDK",
+    "dialog.robodk.reachability_title": "UR10 Path Reachability Check",
     "dialog.robodk.mapping_title": "Read Current RoboDK Station Mapping",
     "dialog.robodk.mapping_explanation": "Read-only operation. The selected Tool is treated as the scanner TCP. No target, program or robot motion is created.",
     "dialog.robodk.robot": "Robot",
@@ -287,6 +290,14 @@
     "message.robodk.complete": "RoboDK import complete: program={program}, poses={poses}, instructions={instructions}",
     "message.robodk.path_failed": "RoboDK planned-path import failed:\n{error}",
     "message.robodk.speed_failed": "RoboDK speed-plan import failed:\n{error}",
+    "message.robodk.reachability_running": "Using the current RoboDK UR10 model to solve all IK branches and check reachability...",
+    "message.robodk.reachability_calibration_required": "Reachability checking requires a verified station-mapping JSON containing T_base_workpiece.",
+    "message.robodk.reachability_complete": "UR10 reachability check complete: total={total}, reachable={reachable}, unreachable={unreachable}\nReachable point indices: {reachable_indices}\nUnreachable points and reasons: {unreachable_details}",
+    "message.robodk.reachability_reason.no_ik_solution": "RoboDK returned no IK solution",
+    "message.robodk.reachability_reason.joint_limits": "all IK solutions exceed model joint limits",
+    "message.robodk.reachability_reason.fk_residual": "FK verification residual exceeded tolerance",
+    "message.robodk.reachability_boundary": "This result verifies only RoboDK robot-model IK, model joint limits and FK residuals. It does not validate collision, dynamics, physical calibration or real-robot safety.",
+    "message.robodk.reachability_failed": "UR10 path reachability check failed:\n{error}",
     "message.layer_toggled": "{layer}: {state}",
 
     "drop.issue.local_only": "Only local files can be imported (received {scheme} URI)",

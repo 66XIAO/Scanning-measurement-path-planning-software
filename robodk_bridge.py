@@ -299,6 +299,15 @@ def _matrix_rows(matrix):
     return [[float(matrix[row, column]) for column in range(4)] for row in range(4)]
 
 
+def _matrix_columns(matrix):
+    """Return a RoboDK matrix as columns without relying on API-version helpers."""
+    rows, columns = matrix.size()
+    return [
+        [float(matrix[row, column]) for row in range(rows)]
+        for column in range(columns)
+    ]
+
+
 def _matrix_multiply(left, right):
     return [[sum(float(left[row][inner]) * float(right[inner][column])
                  for inner in range(4))
@@ -555,6 +564,202 @@ def _verify_tool_mapping(rdk, robot, frame, tool, diagnostics,
                 "{}_orientation_error_deg".format(key): orientation_error,
             })
     return verification
+
+
+def analyze_ur10_reachability(
+        records: Iterable[object], diagnostics: Mapping[str, object],
+        robot_name="UR10", frame_name="Frame 2",
+        tool_name="Creaform MetraSCAN", position_tolerance_mm=0.05,
+        orientation_tolerance_deg=0.05):
+    """Evaluate ordered command TCP poses with RoboDK's UR10 robot model.
+
+    This is a read-only station operation. It creates no targets or programs,
+    does not change robot joints, and does not execute motion. ``records`` are
+    command-TCP poses relative to the workpiece/reference frame, using the same
+    contract as :func:`import_planned_path`.
+
+    For every point the flange pose supplied to RoboDK is::
+
+        T_base_flange = T_base_workpiece * T_workpiece_tcp
+                        * inverse(T_flange_tcp)
+
+    RoboDK supplies all inverse-kinematics branches. Solutions outside the
+    station robot model's joint limits are discarded, the closest solution to
+    the previous selected branch is retained, and SolveFK verifies the result.
+    """
+    points = _prepare_planned_path_points(records)
+    if not isinstance(diagnostics, Mapping):
+        raise ValueError("Reachability diagnostics must be a mapping")
+    diagnostics = dict(diagnostics)
+    if not diagnostics.get("extrinsic_validated", False):
+        raise ValueError(
+            "UR10 reachability requires a verified scanner TCP/tool mapping")
+    if diagnostics.get("T_base_workpiece") is None:
+        raise ValueError(
+            "UR10 reachability requires T_base_workpiece in the station mapping")
+
+    robot_name = _required_name(robot_name, "robot")
+    frame_name = _required_name(frame_name, "frame")
+    tool_name = _required_name(tool_name, "tool")
+    if robot_name != "UR10":
+        raise ValueError("Reachability analysis currently supports only robot UR10")
+    position_tolerance_mm = float(position_tolerance_mm)
+    orientation_tolerance_deg = float(orientation_tolerance_deg)
+    if (not math.isfinite(position_tolerance_mm) or position_tolerance_mm <= 0 or
+            not math.isfinite(orientation_tolerance_deg) or
+            orientation_tolerance_deg <= 0):
+        raise ValueError("FK verification tolerances must be positive finite values")
+
+    api = _import_api()
+    rdk = api["Robolink"]()
+    robot = _require_item(rdk, robot_name, api["ITEM_TYPE_ROBOT"], "robot")
+    frame = _require_item(rdk, frame_name, api["ITEM_TYPE_FRAME"], "frame")
+    tool = _require_item(rdk, tool_name, api["ITEM_TYPE_TOOL"], "tool")
+    mapping_verification = _verify_tool_mapping(
+        rdk, robot, frame, tool, diagnostics,
+        robot_name, frame_name, tool_name)
+
+    current_joints = [float(value) for value in robot.Joints().tolist()]
+    if len(current_joints) != 6:
+        raise RuntimeError(
+            "RoboDK item {} has {} joints; UR10 requires 6".format(
+                robot_name, len(current_joints)))
+    lower_matrix, upper_matrix, joint_type = robot.JointLimits()
+    lower_limits = [float(value) for value in lower_matrix.tolist()]
+    upper_limits = [float(value) for value in upper_matrix.tolist()]
+    if len(lower_limits) != 6 or len(upper_limits) != 6:
+        raise RuntimeError("RoboDK UR10 joint limits must contain 6 values")
+    for axis, (lower, upper) in enumerate(
+            zip(lower_limits, upper_limits), start=1):
+        if (not math.isfinite(lower) or not math.isfinite(upper) or
+                lower > upper):
+            raise RuntimeError(
+                "RoboDK UR10 joint {} has invalid limits".format(axis))
+
+    base_workpiece_rows = diagnostics["T_base_workpiece"]
+    tool_rows = _matrix_rows(tool.PoseTool())
+    flange_tool_inverse = _rigid_inverse(tool_rows)
+    seed_joints = list(current_joints)
+    point_reports = []
+
+    for point in points:
+        workpiece_tcp_rows = _matrix_rows(_pose(point, api))
+        base_flange_rows = _matrix_multiply(
+            _matrix_multiply(base_workpiece_rows, workpiece_tcp_rows),
+            flange_tool_inverse)
+        desired_base_flange = api["Mat"](base_flange_rows)
+        try:
+            solution_matrix = robot.SolveIK_All(desired_base_flange)
+        except Exception as exc:
+            raise RuntimeError(
+                "RoboDK SolveIK_All failed at point {}: {}".format(
+                    point.index, exc)) from exc
+
+        raw_solutions = _matrix_columns(solution_matrix)
+        candidates = []
+        for solution in raw_solutions:
+            joints = solution[:6]
+            if len(joints) != 6 or not all(math.isfinite(value) for value in joints):
+                continue
+            candidates.append(joints)
+        valid_solutions = [
+            joints for joints in candidates
+            if all(lower - 1e-7 <= value <= upper + 1e-7
+                   for value, lower, upper in
+                   zip(joints, lower_limits, upper_limits))
+        ]
+
+        report = {
+            "index": point.index,
+            "reachable": False,
+            "reason": "",
+            "solver_solution_count": len(candidates),
+            "joint_limit_solution_count": len(valid_solutions),
+            "selected_joints_deg": None,
+            "configuration": None,
+            "position_error_mm": None,
+            "orientation_error_deg": None,
+            "joint_jump_l2_deg": None,
+            "joint_jump_max_deg": None,
+            "T_base_flange": base_flange_rows,
+        }
+        if not candidates:
+            report["reason"] = "no_ik_solution"
+            point_reports.append(report)
+            continue
+        if not valid_solutions:
+            report["reason"] = "joint_limits"
+            point_reports.append(report)
+            continue
+
+        selected = min(
+            valid_solutions,
+            key=lambda joints: sum(
+                (value - seed) ** 2
+                for value, seed in zip(joints, seed_joints)))
+        deltas = [value - seed for value, seed in zip(selected, seed_joints)]
+        actual_base_flange = _matrix_rows(robot.SolveFK(selected))
+        position_error, orientation_error = _tool_pose_errors(
+            actual_base_flange, base_flange_rows)
+        configuration = [
+            float(value) for value in robot.JointsConfig(selected).tolist()
+        ]
+        report.update({
+            "selected_joints_deg": selected,
+            "configuration": configuration,
+            "position_error_mm": position_error,
+            "orientation_error_deg": orientation_error,
+            "joint_jump_l2_deg": math.sqrt(sum(delta * delta for delta in deltas)),
+            "joint_jump_max_deg": max(abs(delta) for delta in deltas),
+        })
+        if (position_error > position_tolerance_mm or
+                orientation_error > orientation_tolerance_deg):
+            report["reason"] = "fk_residual"
+            point_reports.append(report)
+            continue
+        report["reachable"] = True
+        report["reason"] = "reachable"
+        seed_joints = list(selected)
+        point_reports.append(report)
+
+    unreachable_indices = [
+        report["index"] for report in point_reports
+        if not report["reachable"]
+    ]
+    reachable_indices = [
+        report["index"] for report in point_reports
+        if report["reachable"]
+    ]
+    reachable_count = len(point_reports) - len(unreachable_indices)
+    return {
+        "solver": "RoboDK Item.SolveIK_All",
+        "read_only": True,
+        "api_source": api.get("api_source", ""),
+        "robodk_version": rdk.Version(),
+        "station": rdk.ActiveStation().Name(),
+        "robot": robot.Name(),
+        "frame": frame.Name(),
+        "tool": tool.Name(),
+        "pose_count": len(point_reports),
+        "reachable_count": reachable_count,
+        "unreachable_count": len(unreachable_indices),
+        "all_reachable": not unreachable_indices,
+        "reachable_indices": reachable_indices,
+        "unreachable_indices": unreachable_indices,
+        "joint_limits_deg": {
+            "lower": lower_limits,
+            "upper": upper_limits,
+            "joint_type": float(joint_type),
+        },
+        "position_tolerance_mm": position_tolerance_mm,
+        "orientation_tolerance_deg": orientation_tolerance_deg,
+        "mapping_verification": mapping_verification,
+        "points": point_reports,
+        "limitations": [
+            "IK and station-model joint limits only",
+            "collision, dynamics and physical calibration are not validated",
+        ],
+    }
 
 
 def _delete_if_valid(item):

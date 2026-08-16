@@ -55,10 +55,23 @@ T_base_workpiece = inverse(T_station_robot_base) × T_station_reference_frame
 3. 若使用独立命令工具而不是“RoboDK TCP即扫描仪”的模式，复制示例文件并填入
    实测`T_tool_scanner`，先保持`unvalidated`。
 4. 也可以通过`Calibration -> 加载扫描仪到工具的外参`重新加载已有JSON。
-5. 运行速度规划并导出CSV；检查其中source pose与command pose是否符合安装方向。
-6. 在多个位置和姿态下，用已知基准件验证扫描仪实际视线/测点与理论结果。
-7. 保存标定方法、日期、操作者、扫描仪/支架序列号和残差报告。
-8. 只有验证通过后才把状态改为`validated`，重新加载并重新规划速度。
+5. 路径排序后，使用`Path Planning -> 检查 UR10 路径可达性`。软件读取当前
+   RoboDK UR10模型的`SolveIK_All`、`JointLimits`和`SolveFK`结果，不创建目标点、
+   程序或机器人运动。
+6. 运行速度规划并导出CSV；检查其中source pose与command pose是否符合安装方向。
+7. 在多个位置和姿态下，用已知基准件验证扫描仪实际视线/测点与理论结果。
+8. 保存标定方法、日期、操作者、扫描仪/支架序列号和残差报告。
+9. 只有验证通过后才把状态改为`validated`，重新加载并重新规划速度。
+
+可达性检查使用以下坐标链，其中`tcp`是JSON所描述的扫描仪TCP或独立命令工具：
+
+```text
+T_base_flange = T_base_workpiece × T_workpiece_tcp × inverse(T_flange_tcp)
+```
+
+RoboDK返回的全部逆解先按当前机器人模型的关节限位过滤，再从当前/上一点关节角
+附近选择候选，并通过`SolveFK`回验位置和姿态残差。结果只说明模型IK可达，
+不包含碰撞、机器人动力学或真实硬件安全验证。
 
 ## 输出与安全门
 
@@ -67,6 +80,7 @@ T_base_workpiece = inverse(T_station_robot_base) × T_station_reference_frame
 - 每行保存frame、config id、是否应用、是否验证。
 - 同名`.metadata.json`保存矩阵、配置SHA256、诊断、算法和警告。
 - 缺失或未验证外参时，可做研究规划和导出，但UI及`robodk_bridge.py`都会拒绝RoboDK导入。
+- 可达性报告使用当前打开的RoboDK机器人模型，当前版本仅允许精确名称`UR10`。
 
 ## 本阶段仍缺少的真实输入
 

@@ -55,6 +55,7 @@ class AppState:
     speed_plan_result: object = None
     last_speed_csv_path: str = ""
     last_robodk_import: dict = field(default_factory=dict)
+    last_reachability_report: dict = field(default_factory=dict)
 
     # Scanner mounting calibration. The object is an ExtrinsicConfig instance.
     extrinsic_config: object = None
@@ -120,6 +121,7 @@ class AppState:
         self.speed_plan_result = None
         self.last_speed_csv_path = ""
         self.last_robodk_import.clear()
+        self.last_reachability_report.clear()
         self.sensor_volumes_list.clear()
         self.face_obbs.clear()
         self.workpiece_coordinate_system_size = 0.0
@@ -153,6 +155,7 @@ class AppState:
         self.speed_plan_result = None
         self.last_speed_csv_path = ""
         self.last_robodk_import.clear()
+        self.last_reachability_report.clear()
         self.reference_normal = None
         self.collision_process_started = False
         self.collision_process_finished = False

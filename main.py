@@ -57,7 +57,8 @@ from speed_planning_ui import (
     get_robodk_mapping_settings,
 )
 from robodk_bridge import (
-    capture_robodk_station_mapping, import_planned_path, import_speed_plan,
+    analyze_ur10_reachability, capture_robodk_station_mapping,
+    import_planned_path, import_speed_plan,
 )
 from pose_transform import (
     load_extrinsic_config, save_extrinsic_config, transform_pose_records,
@@ -302,6 +303,7 @@ def _delete_existing_path():
     state.speed_plan_result = None
     state.last_speed_csv_path = ""
     state.last_robodk_import.clear()
+    state.last_reachability_report.clear()
     for obj in state.optimal_path_objects:
         try:
             display.Context.Erase(obj, True)
@@ -1157,6 +1159,7 @@ def _activate_extrinsic_config(config, file_path):
     state.speed_plan_result = None
     state.last_speed_csv_path = ""
     state.last_robodk_import.clear()
+    state.last_reachability_report.clear()
 
 
 def load_scanner_tool_extrinsic(event=None):
@@ -1241,6 +1244,7 @@ def clear_scanner_tool_extrinsic(event=None):
     state.speed_plan_result = None
     state.last_speed_csv_path = ""
     state.last_robodk_import.clear()
+    state.last_reachability_report.clear()
     _update_workflow(tr("message.extrinsic.cleared_status"))
     show_topmost_message(
         tr("dialog.extrinsic.title"),
@@ -1333,6 +1337,73 @@ def import_planned_path_to_robodk(event=None):
         tr("dialog.robodk.path_title"),
         tr("message.robodk.path_running"),
         lambda: import_planned_path(records, pose_metadata, **settings),
+        on_success, on_error)
+
+
+def analyze_planned_path_reachability(event=None):
+    """Check ordered path poses against the live RoboDK UR10 model."""
+    if not state.optimal_path or not state.optimal_viewpoints_with_pose:
+        show_topmost_message(tr("common.prompt"), tr("message.require.path"))
+        return
+    try:
+        records, pose_metadata = _ordered_pose_records()
+    except Exception as exc:
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.path.input_invalid", error=exc),
+            type="error")
+        return
+    if (not pose_metadata.get("extrinsic_validated", False) or
+            pose_metadata.get("T_base_workpiece") is None):
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.robodk.reachability_calibration_required"),
+            type="error")
+        return
+
+    settings = {
+        "robot_name": pose_metadata.get("expected_robodk_robot_name") or "UR10",
+        "frame_name": pose_metadata.get("expected_robodk_frame_name") or "Frame 2",
+        "tool_name": pose_metadata.get("expected_robodk_tool_name") or
+                     "Creaform MetraSCAN",
+    }
+
+    def on_success(report):
+        state.last_reachability_report = report
+        available = ", ".join(
+            str(index) for index in report["reachable_indices"]
+        ) or tr("common.none")
+        unavailable = ", ".join(
+            "{} ({})".format(
+                point["index"],
+                tr("message.robodk.reachability_reason.{}".format(
+                    point["reason"])))
+            for point in report["points"] if not point["reachable"]
+        ) or tr("common.none")
+        message = tr(
+            "message.robodk.reachability_complete",
+            total=report["pose_count"],
+            reachable=report["reachable_count"],
+            unreachable=report["unreachable_count"],
+            reachable_indices=available,
+            unreachable_details=unavailable)
+        message += "\n\n" + tr("message.robodk.reachability_boundary")
+        _update_workflow(message)
+        show_topmost_message(
+            tr("dialog.robodk.reachability_title"), message,
+            type="info" if report["all_reachable"] else "warning")
+
+    def on_error(error_text):
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.robodk.reachability_failed", error=error_text),
+            type="error")
+
+    run_background_task(
+        tr("dialog.robodk.reachability_title"),
+        tr("message.robodk.reachability_running"),
+        lambda: analyze_ur10_reachability(
+            records, pose_metadata, **settings),
         on_success, on_error)
 
 
@@ -1553,9 +1624,10 @@ Usage Instructions:
   6. Click 'View' menu to show/hide layers
   7. Click 'Path Planning' menu for sequential/greedy/ABC/MSCGA planning
   8. Load a validated T_tool_scanner from 'Calibration' before production import
-  9. After path ordering, use 'Speed Planning' to plan constrained per-pose speeds
- 10. Export Pose+Speed CSV or import Set Speed -> Move pairs to RoboDK
- 11. Click 'Help' menu to show usage instructions again
+  9. Check UR10 reachability using the current RoboDK robot model
+ 10. After path ordering, use 'Speed Planning' to plan constrained per-pose speeds
+ 11. Export Pose+Speed CSV or import Set Speed -> Move pairs to RoboDK
+ 12. Click 'Help' menu to show usage instructions again
 """
 
 
@@ -1631,6 +1703,8 @@ def run():
                            "action.solve_abc")
     _add_translated_action("Path Planning", solve_with_mscga_algorithm,
                            "action.solve_mscga")
+    _add_translated_action("Path Planning", analyze_planned_path_reachability,
+                           "action.analyze_ur10_reachability")
     _add_translated_action("Path Planning", import_planned_path_to_robodk,
                            "action.import_planned_path_robodk")
 
