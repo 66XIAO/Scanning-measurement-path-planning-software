@@ -76,6 +76,7 @@
     "action.export_speed_plan_csv": "导出速度规划 CSV",
     "action.import_planned_path_robodk": "将规划路径导入 RoboDK",
     "action.import_speed_plan_robodk": "将速度规划导入 RoboDK",
+    "action.capture_robodk_mapping": "读取当前 RoboDK 工作站坐标关系...",
     "action.load_extrinsic": "加载扫描仪到工具的外参",
     "action.clear_extrinsic": "清除扫描仪到工具的外参",
     "action.export_path_csv": "导出路径 CSV",
@@ -89,6 +90,7 @@
     "file.export_speed.default_name": "planned_pose_speed.csv",
     "file.csv_filter": "CSV 文件 (*.csv);;所有文件 (*)",
     "file.load_extrinsic.title": "加载扫描仪到工具的外参",
+    "file.save_robodk_mapping.title": "保存当前 RoboDK 工作站坐标关系",
     "file.json_filter": "JSON 文件 (*.json);;所有文件 (*)",
 
     "dock.workflow.title": "工作流",
@@ -155,6 +157,7 @@
     "dialog.input_geometry_warning.title": "输入几何警告",
     "dialog.collision_demo.title": "碰撞演示结果",
     "dialog.extrinsic.title": "扫描仪到工具外参",
+    "dialog.extrinsic.capture_title": "RoboDK 工作站坐标关系",
 
     "dialog.speed.title": "约束速度规划",
     "dialog.speed.explanation": "路径排序后进行速度规划。确定性模式是生产基线，Double-Q 是兼容论文研究的模式。单位：mm、s、deg。",
@@ -180,6 +183,8 @@
 
     "dialog.robodk.speed_title": "将速度规划导入 RoboDK",
     "dialog.robodk.path_title": "将规划路径导入 RoboDK",
+    "dialog.robodk.mapping_title": "读取当前 RoboDK 工作站坐标关系",
+    "dialog.robodk.mapping_explanation": "此操作仅读取数据。所选 Tool 将被视为扫描仪 TCP；不会创建目标点、程序或机器人运动。",
     "dialog.robodk.robot": "机器人",
     "dialog.robodk.frame": "参考坐标系",
     "dialog.robodk.tool": "工具",
@@ -263,6 +268,9 @@
     "message.extrinsic.relationship_scanner_tcp": "T_flange_scanner（RoboDK TCP 即扫描仪）",
     "message.extrinsic.relationship_separate_tool": "T_tool_scanner（独立命令工具）",
     "message.extrinsic.loaded": "已加载工具映射 {config}：状态={status}，模式={mode}，{relationship}",
+    "message.extrinsic.captured": "已读取并保存 RoboDK 坐标关系：工作站={station}，Base={base}，工件={frame}，扫描仪 TCP={tool}\n{path}",
+    "message.extrinsic.capture_failed": "无法读取当前 RoboDK 工作站坐标关系：\n{error}",
+    "message.extrinsic.save_failed": "无法保存 RoboDK 工作站坐标关系：\n{error}",
     "message.extrinsic.simulation_only": "已允许导入 RoboDK 仿真。生产执行前仍须完成实际安装验证。",
     "message.extrinsic.physically_validated": "该外参已完成物理验证，已允许导入 RoboDK。",
     "message.extrinsic.unvalidated": "该配置尚未验证。仍可进行规划和导出，但 RoboDK 导入保持阻止状态。",

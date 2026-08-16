@@ -7,12 +7,17 @@ remain the responsibility of the later speed-planning stage.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import importlib.util
 import math
 import os
 import re
 import sys
 import uuid
 from typing import Callable, Dict, Iterable, Mapping, Optional
+
+
+_LEGACY_API_CACHE = None
 
 
 @dataclass(frozen=True)
@@ -34,40 +39,95 @@ class PlannedPathPoint:
     qz: float
 
 
+def _load_legacy_api(site_packages):
+    """Load RoboDK's bundled 2019 API without its Python-3.12-incompatible init."""
+    global _LEGACY_API_CACHE
+    if _LEGACY_API_CACHE is not None:
+        return _LEGACY_API_CACHE
+    math_path = os.path.join(site_packages, "robodk", "robodk.py")
+    link_path = os.path.join(site_packages, "robolink", "robolink.py")
+    if not os.path.isfile(math_path) or not os.path.isfile(link_path):
+        raise ImportError("Bundled RoboDK API files are incomplete")
+
+    def load_file(module_name, file_path):
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        if spec is None or spec.loader is None:
+            raise ImportError("Could not load {}".format(file_path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    legacy_math = load_file("_software_optimizing_robodk_math", math_path)
+    previous_robodk = sys.modules.get("robodk")
+    sys.modules["robodk"] = legacy_math
+    try:
+        legacy_link = load_file(
+            "_software_optimizing_robolink", link_path)
+    finally:
+        if previous_robodk is None:
+            sys.modules.pop("robodk", None)
+        else:
+            sys.modules["robodk"] = previous_robodk
+    _LEGACY_API_CACHE = {
+        "ITEM_TYPE_FRAME": legacy_link.ITEM_TYPE_FRAME,
+        "ITEM_TYPE_PROGRAM": legacy_link.ITEM_TYPE_PROGRAM,
+        "ITEM_TYPE_ROBOT": legacy_link.ITEM_TYPE_ROBOT,
+        "ITEM_TYPE_TARGET": legacy_link.ITEM_TYPE_TARGET,
+        "ITEM_TYPE_TOOL": legacy_link.ITEM_TYPE_TOOL,
+        "Robolink": legacy_link.Robolink,
+        "Mat": legacy_math.Mat,
+        "transl": legacy_math.transl,
+        "api_source": link_path,
+    }
+    return _LEGACY_API_CACHE
+
+
 def _import_api():
+    # Prefer the API shipped with the installed RoboDK application.  RoboDK
+    # 4.0.0 expects legacy commands such as ``S_Frame_ptr``; a newer pip API
+    # sends ``S_Link_ptr`` and the old server waits until the socket times out.
+    candidates = [
+        os.environ.get("ROBODK_API_PATH", ""),
+        r"D:\RoboDK\Python37\lib\site-packages",
+        r"C:\RoboDK\Python37\lib\site-packages",
+        r"C:\Program Files\RoboDK\Python37\lib\site-packages",
+    ]
+    for path in candidates:
+        if not path or not os.path.isdir(path):
+            continue
+        try:
+            return _load_legacy_api(path)
+        except (ImportError, OSError):
+            continue
     try:
         from robodk.robolink import (  # type: ignore
             ITEM_TYPE_FRAME, ITEM_TYPE_PROGRAM, ITEM_TYPE_ROBOT,
             ITEM_TYPE_TARGET, ITEM_TYPE_TOOL, Robolink,
         )
         from robodk.robomath import Mat, transl  # type: ignore
-    except ImportError:
-        candidates = [
-            os.environ.get("ROBODK_API_PATH", ""),
-            r"D:\RoboDK\Python37\lib\site-packages",
-            r"C:\RoboDK\Python37\lib\site-packages",
-            r"C:\Program Files\RoboDK\Python37\lib\site-packages",
-        ]
-        for path in candidates:
-            if path and os.path.isdir(path) and path not in sys.path:
-                sys.path.insert(0, path)
-        try:
-            from robolink import (  # type: ignore
-                ITEM_TYPE_FRAME, ITEM_TYPE_PROGRAM, ITEM_TYPE_ROBOT,
-                ITEM_TYPE_TARGET, ITEM_TYPE_TOOL, Robolink,
-            )
-            from robodk import Mat, transl  # type: ignore
-        except ImportError as exc:
-            raise ImportError(
-                "RoboDK API not found. Set ROBODK_API_PATH to RoboDK's site-packages."
-            ) from exc
-    return locals()
+    except ImportError as exc:
+        raise ImportError(
+            "RoboDK API not found. Set ROBODK_API_PATH to RoboDK's site-packages."
+        ) from exc
+    return {
+        "ITEM_TYPE_FRAME": ITEM_TYPE_FRAME,
+        "ITEM_TYPE_PROGRAM": ITEM_TYPE_PROGRAM,
+        "ITEM_TYPE_ROBOT": ITEM_TYPE_ROBOT,
+        "ITEM_TYPE_TARGET": ITEM_TYPE_TARGET,
+        "ITEM_TYPE_TOOL": ITEM_TYPE_TOOL,
+        "Robolink": Robolink,
+        "Mat": Mat,
+        "transl": transl,
+        "api_source": getattr(sys.modules.get(Robolink.__module__), "__file__", ""),
+    }
 
 
 def inspect_station() -> Dict[str, object]:
     api = _import_api()
     rdk = api["Robolink"]()
     return {
+        "api_source": api.get("api_source", ""),
+        "robodk_version": rdk.Version(),
         "station": rdk.ActiveStation().Name(),
         "robots": [item.Name() for item in rdk.ItemList(api["ITEM_TYPE_ROBOT"])],
         "frames": [item.Name() for item in rdk.ItemList(api["ITEM_TYPE_FRAME"])],
@@ -239,6 +299,108 @@ def _matrix_rows(matrix):
     return [[float(matrix[row, column]) for column in range(4)] for row in range(4)]
 
 
+def _matrix_multiply(left, right):
+    return [[sum(float(left[row][inner]) * float(right[inner][column])
+                 for inner in range(4))
+             for column in range(4)]
+            for row in range(4)]
+
+
+def _rigid_inverse(matrix):
+    rotation_t = [[float(matrix[column][row]) for column in range(3)]
+                  for row in range(3)]
+    translation = [float(matrix[row][3]) for row in range(3)]
+    inverse = [[0.0] * 4 for _ in range(4)]
+    for row in range(3):
+        for column in range(3):
+            inverse[row][column] = rotation_t[row][column]
+        inverse[row][3] = -sum(
+            rotation_t[row][column] * translation[column]
+            for column in range(3))
+    inverse[3][3] = 1.0
+    return inverse
+
+
+def _base_workpiece_rows(robot, frame):
+    base = robot.Parent()
+    if not _is_valid(base):
+        raise RuntimeError("RoboDK robot has no valid Base parent")
+    station_base = _matrix_rows(base.PoseAbs())
+    station_workpiece = _matrix_rows(frame.PoseAbs())
+    base_workpiece = _matrix_multiply(
+        _rigid_inverse(station_base), station_workpiece)
+    return base, station_base, station_workpiece, base_workpiece
+
+
+def capture_robodk_station_mapping(
+        robot_name="UR10", frame_name="Frame 2",
+        tool_name="Creaform MetraSCAN", captured_at_utc=None):
+    """Read the open RoboDK station and return a validated schema-1.2 config.
+
+    This function is strictly read-only: it resolves existing items and reads
+    their absolute/tool poses.  It creates no targets, programs or station
+    objects and does not change the active robot pose.
+    """
+    robot_name = _required_name(robot_name, "robot")
+    frame_name = _required_name(frame_name, "frame")
+    tool_name = _required_name(tool_name, "tool")
+    api = _import_api()
+    rdk = api["Robolink"]()
+    robot = _require_item(rdk, robot_name, api["ITEM_TYPE_ROBOT"], "robot")
+    frame = _require_item(rdk, frame_name, api["ITEM_TYPE_FRAME"], "frame")
+    tool = _require_item(rdk, tool_name, api["ITEM_TYPE_TOOL"], "tool")
+    base, station_base, station_workpiece, base_workpiece = (
+        _base_workpiece_rows(robot, frame))
+    tool_parent = tool.Parent()
+    if not _is_valid(tool_parent) or tool_parent.Name() != robot.Name():
+        parent_name = tool_parent.Name() if _is_valid(tool_parent) else "<invalid>"
+        raise RuntimeError(
+            "RoboDK tool {} is not attached to robot {} (parent={})".format(
+                tool_name, robot_name, parent_name))
+    station_name = rdk.ActiveStation().Name()
+    if captured_at_utc is None:
+        captured_at_utc = (datetime.now(timezone.utc).replace(microsecond=0)
+                           .isoformat().replace("+00:00", "Z"))
+    captured_at_utc = str(captured_at_utc).strip()
+    if not captured_at_utc:
+        raise ValueError("captured_at_utc must not be blank")
+    timestamp_id = re.sub(r"[^0-9A-Za-z]+", "", captured_at_utc)
+    data = {
+        "schema_version": "1.2",
+        "config_id": "ROBODK_LIVE_{}_{}".format(
+            _safe_name(station_name), timestamp_id),
+        "calibration_status": "station_verified",
+        "mapping_mode": "robodk_tcp_is_scanner",
+        "source_pose_frame": "scanner",
+        "command_pose_frame": "scanner_tcp",
+        "length_unit": "mm",
+        "quaternion_order": "wxyz",
+        "T_tool_scanner": None,
+        "T_flange_scanner": _matrix_rows(tool.PoseTool()),
+        "T_flange_tool": None,
+        "robodk_station_name": station_name,
+        "robodk_robot_name": robot.Name(),
+        "robodk_tool_name": tool.Name(),
+        "robodk_frame_name": frame.Name(),
+        "robodk_base_name": base.Name(),
+        "T_station_robot_base": station_base,
+        "T_station_reference_frame": station_workpiece,
+        "T_base_workpiece": base_workpiece,
+        "transform_convention": (
+            "T_A_B maps coordinates from frame B to frame A"),
+        "captured_from": "open_robodk_station_read_only",
+        "captured_at_utc": captured_at_utc,
+        "position_tolerance_mm": 0.01,
+        "orientation_tolerance_deg": 0.01,
+        "notes": (
+            "Read from the currently open RoboDK station. Station relationships "
+            "are verified for simulation only; physical scanner mounting and "
+            "CAD-workpiece calibration require independent validation."),
+    }
+    from pose_transform import parse_extrinsic_config
+    return parse_extrinsic_config(data)
+
+
 def _tool_pose_errors(actual, expected):
     translation_error = math.sqrt(sum(
         (actual[row][3] - expected[row][3]) ** 2 for row in range(3)))
@@ -260,6 +422,7 @@ def _verify_tool_mapping(rdk, robot, frame, tool, diagnostics,
     expected_robot = diagnostics.get("expected_robodk_robot_name", "")
     expected_tool = diagnostics.get("expected_robodk_tool_name", "")
     expected_frame = diagnostics.get("expected_robodk_frame_name", "")
+    expected_base = diagnostics.get("expected_robodk_base_name", "")
     station_name = rdk.ActiveStation().Name()
     actual_robot_name = robot.Name()
     actual_tool_name = tool.Name()
@@ -276,6 +439,18 @@ def _verify_tool_mapping(rdk, robot, frame, tool, diagnostics,
     if expected_frame and expected_frame != actual_frame_name:
         raise RuntimeError("RoboDK frame mismatch: expected {}, got {}".format(
             expected_frame, actual_frame_name))
+    expected_station_base = diagnostics.get("T_station_robot_base")
+    expected_base_workpiece = diagnostics.get("T_base_workpiece")
+    actual_base_name = None
+    if (expected_base or expected_station_base is not None or
+            expected_base_workpiece is not None):
+        base = robot.Parent()
+        if not _is_valid(base):
+            raise RuntimeError("RoboDK robot has no valid Base parent")
+        actual_base_name = base.Name()
+        if expected_base and expected_base != actual_base_name:
+            raise RuntimeError("RoboDK Base mismatch: expected {}, got {}".format(
+                expected_base, actual_base_name))
 
     # Exact station-tree lookup is mandatory even when a calibration file does
     # not pin expected names.  This also documents the names that were actually
@@ -299,6 +474,8 @@ def _verify_tool_mapping(rdk, robot, frame, tool, diagnostics,
         "physical_calibration_validated": bool(
             diagnostics.get("physical_calibration_validated", False)),
     }
+    if actual_base_name is not None:
+        verification["base"] = actual_base_name
     expected_matrix = None
     matrix_label = None
     mismatch_label = None
@@ -334,7 +511,7 @@ def _verify_tool_mapping(rdk, robot, frame, tool, diagnostics,
         })
     expected_frame_matrix = diagnostics.get("T_station_reference_frame")
     if expected_frame_matrix is not None:
-        actual_frame_matrix = _matrix_rows(frame.Pose())
+        actual_frame_matrix = _matrix_rows(frame.PoseAbs())
         frame_position_error, frame_orientation_error = _tool_pose_errors(
             actual_frame_matrix, expected_frame_matrix)
         position_tolerance = float(diagnostics.get("tool_position_tolerance_mm", 0.01))
@@ -351,6 +528,32 @@ def _verify_tool_mapping(rdk, robot, frame, tool, diagnostics,
             "frame_position_error_mm": frame_position_error,
             "frame_orientation_error_deg": frame_orientation_error,
         })
+    if expected_station_base is not None or expected_base_workpiece is not None:
+        if expected_station_base is None or expected_base_workpiece is None:
+            raise ValueError(
+                "T_station_robot_base and T_base_workpiece must be provided together")
+        _base, actual_station_base, _actual_station_frame, actual_base_workpiece = (
+            _base_workpiece_rows(robot, frame))
+        position_tolerance = float(
+            diagnostics.get("tool_position_tolerance_mm", 0.01))
+        orientation_tolerance = float(
+            diagnostics.get("tool_orientation_tolerance_deg", 0.01))
+        for label, actual, expected in (
+                ("robot Base", actual_station_base, expected_station_base),
+                ("Base-to-workpiece", actual_base_workpiece,
+                 expected_base_workpiece)):
+            position_error, orientation_error = _tool_pose_errors(actual, expected)
+            if (position_error > position_tolerance or
+                    orientation_error > orientation_tolerance):
+                raise RuntimeError(
+                    "RoboDK {} mismatch: position {:.6f} mm, orientation "
+                    "{:.6f} deg".format(label, position_error, orientation_error))
+            key = "T_station_robot_base" if label == "robot Base" else "T_base_workpiece"
+            verification.update({
+                "{}_actual".format(key): actual,
+                "{}_position_error_mm".format(key): position_error,
+                "{}_orientation_error_deg".format(key): orientation_error,
+            })
     return verification
 
 

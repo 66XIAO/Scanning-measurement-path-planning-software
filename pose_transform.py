@@ -16,14 +16,17 @@ common double-transform error:
 from dataclasses import dataclass
 import json
 import math
+import os
+import tempfile
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 
-SCHEMA_VERSION = "1.1"
-SUPPORTED_SCHEMA_VERSIONS = ("1.0", SCHEMA_VERSION)
+SCHEMA_VERSION = "1.2"
+SUPPORTED_SCHEMA_VERSIONS = ("1.0", "1.1", SCHEMA_VERSION)
 EPS = 1e-9
+TRANSFORM_CONVENTION = "T_A_B maps coordinates from frame B to frame A"
 
 
 MatrixTuple = Tuple[Tuple[float, ...], ...]
@@ -46,7 +49,13 @@ class ExtrinsicConfig:
     robodk_robot_name: str = ""
     robodk_tool_name: str = ""
     robodk_frame_name: str = ""
+    robodk_base_name: str = ""
+    t_station_robot_base: Optional[MatrixTuple] = None
     t_station_reference_frame: Optional[MatrixTuple] = None
+    t_base_workpiece: Optional[MatrixTuple] = None
+    transform_convention: str = TRANSFORM_CONVENTION
+    captured_from: str = ""
+    captured_at_utc: str = ""
     position_tolerance_mm: float = 0.01
     orientation_tolerance_deg: float = 0.01
     notes: str = ""
@@ -66,6 +75,12 @@ class ExtrinsicConfig:
             raise ValueError("This mapping does not use T_tool_scanner")
         return np.asarray(self.t_tool_scanner, dtype=float)
 
+    @property
+    def base_workpiece_matrix(self) -> np.ndarray:
+        if self.t_base_workpiece is None:
+            raise ValueError("This configuration does not define T_base_workpiece")
+        return np.asarray(self.t_base_workpiece, dtype=float)
+
     def to_dict(self) -> Dict[str, object]:
         return {
             "schema_version": self.schema_version,
@@ -83,7 +98,13 @@ class ExtrinsicConfig:
             "robodk_robot_name": self.robodk_robot_name,
             "robodk_tool_name": self.robodk_tool_name,
             "robodk_frame_name": self.robodk_frame_name,
+            "robodk_base_name": self.robodk_base_name,
+            "T_station_robot_base": _rows_or_none(self.t_station_robot_base),
             "T_station_reference_frame": _rows_or_none(self.t_station_reference_frame),
+            "T_base_workpiece": _rows_or_none(self.t_base_workpiece),
+            "transform_convention": self.transform_convention,
+            "captured_from": self.captured_from,
+            "captured_at_utc": self.captured_at_utc,
             "position_tolerance_mm": self.position_tolerance_mm,
             "orientation_tolerance_deg": self.orientation_tolerance_deg,
             "notes": self.notes,
@@ -141,6 +162,10 @@ def parse_extrinsic_config(data: Dict[str, object]) -> ExtrinsicConfig:
         raise ValueError("Only millimetre translations are currently supported")
     if data.get("quaternion_order") != "wxyz":
         raise ValueError("quaternion_order must be wxyz")
+    transform_convention = str(
+        data.get("transform_convention", TRANSFORM_CONVENTION)).strip()
+    if transform_convention != TRANSFORM_CONVENTION:
+        raise ValueError("Unsupported transform_convention")
 
     t_tool_scanner = _matrix_value(
         data, "T_tool_scanner", mode == "separate_tool_frame")
@@ -151,8 +176,28 @@ def parse_extrinsic_config(data: Dict[str, object]) -> ExtrinsicConfig:
     # and verifies it against the selected station Tool before publishing a
     # program; see robodk_bridge._verify_tool_mapping.
     t_flange_tool = _matrix_value(data, "T_flange_tool", False)
+    t_station_robot_base = _matrix_value(
+        data, "T_station_robot_base", False)
     t_station_reference_frame = _matrix_value(
         data, "T_station_reference_frame", False)
+    t_base_workpiece = _matrix_value(data, "T_base_workpiece", False)
+    coordinate_matrices = (
+        t_station_robot_base, t_station_reference_frame, t_base_workpiece)
+    has_explicit_base_chain = (
+        t_station_robot_base is not None or t_base_workpiece is not None)
+    if has_explicit_base_chain:
+        if not all(matrix is not None for matrix in coordinate_matrices):
+            raise ValueError(
+                "T_station_robot_base, T_station_reference_frame and "
+                "T_base_workpiece must be provided together")
+        station_base = np.asarray(t_station_robot_base, dtype=float)
+        station_workpiece = np.asarray(t_station_reference_frame, dtype=float)
+        base_workpiece = np.asarray(t_base_workpiece, dtype=float)
+        derived = np.linalg.inv(station_base) @ station_workpiece
+        if not np.allclose(derived, base_workpiece, atol=1e-6):
+            raise ValueError(
+                "Coordinate chain mismatch: inv(T_station_robot_base) @ "
+                "T_station_reference_frame must equal T_base_workpiece")
     tool_name = str(data.get("robodk_tool_name", "")).strip()
     if mode == "robodk_tcp_is_scanner" and not tool_name:
         raise ValueError("robodk_tool_name is required when RoboDK TCP is scanner")
@@ -176,7 +221,13 @@ def parse_extrinsic_config(data: Dict[str, object]) -> ExtrinsicConfig:
         robodk_robot_name=str(data.get("robodk_robot_name", "")).strip(),
         robodk_tool_name=tool_name,
         robodk_frame_name=str(data.get("robodk_frame_name", "")).strip(),
+        robodk_base_name=str(data.get("robodk_base_name", "")).strip(),
+        t_station_robot_base=t_station_robot_base,
         t_station_reference_frame=t_station_reference_frame,
+        t_base_workpiece=t_base_workpiece,
+        transform_convention=transform_convention,
+        captured_from=str(data.get("captured_from", "")).strip(),
+        captured_at_utc=str(data.get("captured_at_utc", "")).strip(),
         position_tolerance_mm=position_tolerance,
         orientation_tolerance_deg=orientation_tolerance,
         notes=str(data.get("notes", "")),
@@ -189,6 +240,37 @@ def load_extrinsic_config(file_path: str) -> ExtrinsicConfig:
     if not isinstance(data, dict):
         raise ValueError("Extrinsic configuration root must be an object")
     return parse_extrinsic_config(data)
+
+
+def save_extrinsic_config(file_path: str, config: ExtrinsicConfig) -> str:
+    """Validate and atomically save one scanner/station mapping JSON file."""
+    if not isinstance(config, ExtrinsicConfig):
+        raise TypeError("config must be an ExtrinsicConfig")
+    # Round-trip through the parser before touching the destination so the
+    # written file can always be loaded by this application version.
+    data = config.to_dict()
+    parse_extrinsic_config(data)
+    destination = os.path.abspath(os.fspath(file_path))
+    directory = os.path.dirname(destination)
+    if not os.path.isdir(directory):
+        raise ValueError("Configuration directory does not exist: {}".format(directory))
+    fd, temporary = tempfile.mkstemp(
+        prefix="." + os.path.basename(destination) + ".",
+        suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    return destination
 
 
 def quaternion_to_rotation(quaternion: Sequence[float]) -> np.ndarray:
@@ -266,6 +348,18 @@ def transform_scanner_pose_to_tool(record: Dict[str, object],
     return matrix_pose(world_tool, int(record["index"]))
 
 
+def transform_workpiece_pose_to_base(record: Dict[str, object],
+                                     config: ExtrinsicConfig) -> Dict[str, object]:
+    """Express a pose from the workpiece/Frame coordinate system in robot Base.
+
+    This is intentionally separate from :func:`transform_scanner_pose_to_tool`.
+    RoboDK imports remain Frame-relative; Base poses are for offline robot
+    kinematics, reachability and later D-H inverse-kinematics analysis.
+    """
+    base_pose = config.base_workpiece_matrix @ pose_matrix(record)
+    return matrix_pose(base_pose, int(record["index"]))
+
+
 def transform_pose_records(records: Iterable[Dict[str, object]],
                            config: ExtrinsicConfig) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     source_records = [dict(record) for record in records]
@@ -287,7 +381,13 @@ def transform_pose_records(records: Iterable[Dict[str, object]],
         "expected_robodk_robot_name": config.robodk_robot_name,
         "expected_robodk_tool_name": config.robodk_tool_name,
         "expected_robodk_frame_name": config.robodk_frame_name,
+        "expected_robodk_base_name": config.robodk_base_name,
+        "T_station_robot_base": _rows_or_none(config.t_station_robot_base),
         "T_station_reference_frame": _rows_or_none(config.t_station_reference_frame),
+        "T_base_workpiece": _rows_or_none(config.t_base_workpiece),
+        "transform_convention": config.transform_convention,
+        "captured_from": config.captured_from,
+        "captured_at_utc": config.captured_at_utc,
         "tool_position_tolerance_mm": config.position_tolerance_mm,
         "tool_orientation_tolerance_deg": config.orientation_tolerance_deg,
         "source_pose_records": source_records,

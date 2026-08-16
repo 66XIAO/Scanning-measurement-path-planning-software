@@ -21,22 +21,44 @@ T_world_tool    = T_world_scanner × inverse(T_tool_scanner)
 
 关键字段：
 
-- `schema_version`：当前必须为`1.0`。
+- `schema_version`：当前写出`1.2`；读取时兼容`1.0`和`1.1`。
 - `config_id`：标定记录的唯一编号。
-- `calibration_status`：`example_only | unvalidated | validated`。
+- `calibration_status`：`example_only | unvalidated | station_verified | validated`。
 - `T_tool_scanner`：4×4刚体齐次矩阵。
 - `length_unit=mm`、`quaternion_order=wxyz`。
+
+当配置来自当前打开的RoboDK工作站时，还会保存：
+
+- `T_station_robot_base`：UR10 Base在RoboDK站点全局坐标系中的位姿；
+- `T_station_reference_frame`：所选参考系（例如`Frame 2`）在站点全局坐标系中的位姿；
+- `T_base_workpiece`：工件/参考系在UR10 Base坐标系中的位姿；
+- `T_flange_scanner`：扫描仪TCP在机器人法兰坐标系中的位姿。
+
+三条参考系关系必须满足：
+
+```text
+T_base_workpiece = inverse(T_station_robot_base) × T_station_reference_frame
+```
+
+`T_station_reference_frame`和`T_base_workpiece`只有在机器人Base与站点全局原点
+完全重合时才相同，不能因为名称中包含“Frame”而互换使用。
 
 程序会拒绝非有限值、非正交旋转、行列式不是+1、错误末行、错误单位或未知版本。
 
 ## 使用步骤
 
-1. 复制示例文件，填入实测`T_tool_scanner`，先保持`unvalidated`。
-2. 在软件中打开`Calibration -> load_scanner_tool_extrinsic`。
-3. 运行速度规划并导出CSV；检查其中source pose与command pose是否符合安装方向。
-4. 在多个位置和姿态下，用已知基准件验证扫描仪实际视线/测点与理论结果。
-5. 保存标定方法、日期、操作者、扫描仪/支架序列号和残差报告。
-6. 只有验证通过后才把状态改为`validated`，重新加载并重新规划速度。
+1. 若RoboDK工作站已经配置好机器人、参考系和扫描仪TCP，使用
+   `Calibration -> 读取当前 RoboDK 工作站坐标关系...`，填写精确对象名并选择
+   保存位置。保存对话框可以覆盖旧JSON，也可以新建JSON。
+2. 软件只读取现有对象，不创建目标点/程序，也不移动机器人。保存后的状态为
+   `station_verified`，只代表RoboDK仿真站点关系已核对。
+3. 若使用独立命令工具而不是“RoboDK TCP即扫描仪”的模式，复制示例文件并填入
+   实测`T_tool_scanner`，先保持`unvalidated`。
+4. 也可以通过`Calibration -> 加载扫描仪到工具的外参`重新加载已有JSON。
+5. 运行速度规划并导出CSV；检查其中source pose与command pose是否符合安装方向。
+6. 在多个位置和姿态下，用已知基准件验证扫描仪实际视线/测点与理论结果。
+7. 保存标定方法、日期、操作者、扫描仪/支架序列号和残差报告。
+8. 只有验证通过后才把状态改为`validated`，重新加载并重新规划速度。
 
 ## 输出与安全门
 

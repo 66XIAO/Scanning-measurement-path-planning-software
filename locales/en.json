@@ -76,6 +76,7 @@
     "action.export_speed_plan_csv": "Export speed plan to CSV",
     "action.import_planned_path_robodk": "Import planned path to RoboDK",
     "action.import_speed_plan_robodk": "Import speed plan to RoboDK",
+    "action.capture_robodk_mapping": "Read current RoboDK station mapping...",
     "action.load_extrinsic": "Load scanner-to-tool extrinsic",
     "action.clear_extrinsic": "Clear scanner-to-tool extrinsic",
     "action.export_path_csv": "Export path to CSV",
@@ -89,6 +90,7 @@
     "file.export_speed.default_name": "planned_pose_speed.csv",
     "file.csv_filter": "CSV Files (*.csv);;All Files (*)",
     "file.load_extrinsic.title": "Load Scanner-to-Tool Extrinsic",
+    "file.save_robodk_mapping.title": "Save Current RoboDK Station Mapping",
     "file.json_filter": "JSON Files (*.json);;All Files (*)",
 
     "dock.workflow.title": "Workflow",
@@ -155,6 +157,7 @@
     "dialog.input_geometry_warning.title": "Input Geometry Warning",
     "dialog.collision_demo.title": "Collision Demo Result",
     "dialog.extrinsic.title": "Scanner-to-Tool Extrinsic",
+    "dialog.extrinsic.capture_title": "RoboDK Station Mapping",
 
     "dialog.speed.title": "Constrained Speed Planning",
     "dialog.speed.explanation": "Plan speed after path ordering. Deterministic mode is the production baseline; Double-Q is the thesis-compatible research mode. Units: mm, s, deg.",
@@ -180,6 +183,8 @@
 
     "dialog.robodk.speed_title": "Import Speed Plan to RoboDK",
     "dialog.robodk.path_title": "Import Planned Path to RoboDK",
+    "dialog.robodk.mapping_title": "Read Current RoboDK Station Mapping",
+    "dialog.robodk.mapping_explanation": "Read-only operation. The selected Tool is treated as the scanner TCP. No target, program or robot motion is created.",
     "dialog.robodk.robot": "Robot",
     "dialog.robodk.frame": "Reference frame",
     "dialog.robodk.tool": "Tool",
@@ -263,6 +268,9 @@
     "message.extrinsic.relationship_scanner_tcp": "T_flange_scanner (RoboDK TCP is the scanner)",
     "message.extrinsic.relationship_separate_tool": "T_tool_scanner (separate command tool)",
     "message.extrinsic.loaded": "Loaded tool mapping {config}: status={status}, mode={mode}, {relationship}",
+    "message.extrinsic.captured": "Read and saved RoboDK mapping: station={station}, Base={base}, workpiece={frame}, scanner TCP={tool}\n{path}",
+    "message.extrinsic.capture_failed": "Could not read the current RoboDK station mapping:\n{error}",
+    "message.extrinsic.save_failed": "Could not save the RoboDK station mapping:\n{error}",
     "message.extrinsic.simulation_only": "RoboDK simulation import is enabled. Physical mounting validation is still required before production execution.",
     "message.extrinsic.physically_validated": "RoboDK import is enabled for this physically validated calibration.",
     "message.extrinsic.unvalidated": "This configuration is not validated. Planning and export are allowed, but RoboDK import remains blocked.",

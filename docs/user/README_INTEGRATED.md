@@ -9,7 +9,9 @@ post-path constrained speed planning and RoboDK program generation.
    the 3D viewer.
 2. Segment CAD faces and compute face centers/normals.
 3. Generate/filter scanner viewpoints and order the measurement path.
-4. Load a validated scanner/tool mapping from the **Calibration** menu.
+4. Use **Calibration -> Read current RoboDK station mapping...** to capture the
+   open station's Base/workpiece/scanner-TCP transforms, or load an existing
+   validated scanner/tool mapping.
 5. Optionally use **Path Planning -> Import planned path to RoboDK** to create a
    movement-only program for checking the ordered poses before speed planning.
 6. Open **Speed Planning -> Plan path speeds**.
@@ -52,6 +54,14 @@ Tool TCP. For `separate_tool_frame`, planning/export can still read an older
 configuration without `T_flange_tool`, but RoboDK import is blocked until a
 measured `T_flange_tool` is present and matches `Tool.PoseTool()` within the
 configured position/orientation tolerances.
+
+Schema 1.2 keeps station and robot-Base relationships separate:
+`T_station_reference_frame` expresses the workpiece/reference frame in the
+RoboDK station origin, while `T_base_workpiece` expresses it in UR10 Base.
+The capture action also stores `T_station_robot_base` and rejects a file unless
+`inverse(T_station_robot_base) * T_station_reference_frame` equals
+`T_base_workpiece`. Capturing is read-only and marks the result
+`station_verified`; it is not physical scanner/CAD calibration.
 
 ## Start without installing packages
 

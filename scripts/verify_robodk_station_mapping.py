@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import sys
-from types import SimpleNamespace
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,7 +22,6 @@ def main(argv=None):
     dummy = [{"index": 1, "x": 0, "y": 0, "z": 0,
               "qw": 1, "qx": 0, "qy": 0, "qz": 0}]
     _commands, metadata = transform_pose_records(dummy, config)
-    result = SimpleNamespace(diagnostics=metadata)
     api = robodk_bridge._import_api()
     rdk = api["Robolink"]()
     robot = robodk_bridge._require_item(
@@ -33,7 +31,7 @@ def main(argv=None):
     tool = robodk_bridge._require_item(
         rdk, config.robodk_tool_name, api["ITEM_TYPE_TOOL"], "tool")
     verification = robodk_bridge._verify_tool_mapping(
-        rdk, robot, frame, tool, result,
+        rdk, robot, frame, tool, metadata,
         config.robodk_robot_name, config.robodk_frame_name, config.robodk_tool_name)
     print(json.dumps(verification, ensure_ascii=False, indent=2))
     return 0

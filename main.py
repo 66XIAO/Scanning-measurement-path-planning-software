@@ -52,9 +52,16 @@ from ui_panels import (
 from workers import TaskRunner
 from export_utils import write_path_pose_csv, write_speed_plan_csv
 from speed_planning_core import ConstraintProfile, plan_speed_profile
-from speed_planning_ui import get_speed_planning_settings, get_robodk_import_settings
-from robodk_bridge import import_planned_path, import_speed_plan
-from pose_transform import load_extrinsic_config, transform_pose_records
+from speed_planning_ui import (
+    get_speed_planning_settings, get_robodk_import_settings,
+    get_robodk_mapping_settings,
+)
+from robodk_bridge import (
+    capture_robodk_station_mapping, import_planned_path, import_speed_plan,
+)
+from pose_transform import (
+    load_extrinsic_config, save_extrinsic_config, transform_pose_records,
+)
 from cad_io import load_cad_shape
 from i18n import (
     LocaleValidationError, set_language, set_language_from_file,
@@ -1142,6 +1149,16 @@ def export_path_to_csv(event=None):
 # 12. Constrained speed planning and RoboDK integration
 # ---------------------------------------------------------------------------
 
+def _activate_extrinsic_config(config, file_path):
+    state.extrinsic_config = config
+    state.extrinsic_config_path = file_path
+    with open(file_path, "rb") as stream:
+        state.extrinsic_config_sha256 = hashlib.sha256(stream.read()).hexdigest()
+    state.speed_plan_result = None
+    state.last_speed_csv_path = ""
+    state.last_robodk_import.clear()
+
+
 def load_scanner_tool_extrinsic(event=None):
     file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
         get_main_window(), tr("file.load_extrinsic.title"), "calibration",
@@ -1150,13 +1167,7 @@ def load_scanner_tool_extrinsic(event=None):
         return
     try:
         config = load_extrinsic_config(file_path)
-        state.extrinsic_config = config
-        state.extrinsic_config_path = file_path
-        with open(file_path, "rb") as stream:
-            state.extrinsic_config_sha256 = hashlib.sha256(stream.read()).hexdigest()
-        state.speed_plan_result = None
-        state.last_speed_csv_path = ""
-        state.last_robodk_import.clear()
+        _activate_extrinsic_config(config, file_path)
         relationship = tr(
             "message.extrinsic.relationship_scanner_tcp"
             if config.mapping_mode == "robodk_tcp_is_scanner"
@@ -1179,6 +1190,48 @@ def load_scanner_tool_extrinsic(event=None):
         show_topmost_message(
             tr("common.error"), tr("message.extrinsic.invalid", error=e),
             type="error")
+
+
+def capture_current_robodk_station_mapping(event=None):
+    """Read current RoboDK frame/tool relationships and save a JSON mapping."""
+    settings = get_robodk_mapping_settings(get_main_window())
+    if not settings:
+        return
+    try:
+        config = capture_robodk_station_mapping(**settings)
+    except Exception as e:
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.extrinsic.capture_failed", error=e), type="error")
+        return
+    default_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "calibration",
+        "robodk_live_station_mapping.json")
+    file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        get_main_window(), tr("file.save_robodk_mapping.title"),
+        default_path, tr("file.json_filter"))
+    if not file_path:
+        return
+    try:
+        saved_path = save_extrinsic_config(file_path, config)
+        loaded = load_extrinsic_config(saved_path)
+        _activate_extrinsic_config(loaded, saved_path)
+        message = tr(
+            "message.extrinsic.captured",
+            station=loaded.robodk_station_name,
+            base=loaded.robodk_base_name,
+            frame=loaded.robodk_frame_name,
+            tool=loaded.robodk_tool_name,
+            path=saved_path)
+        _update_workflow(message)
+        show_topmost_message(
+            tr("dialog.extrinsic.capture_title"),
+            message + "\n\n" + tr("message.extrinsic.simulation_only"),
+            type="warning")
+    except Exception as e:
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.extrinsic.save_failed", error=e), type="error")
 
 
 def clear_scanner_tool_extrinsic(event=None):
@@ -1590,8 +1643,11 @@ def run():
     _add_translated_action("Speed Planning", import_speed_plan_to_robodk,
                            "action.import_speed_plan_robodk")
 
-    # Calibration menu. A validated T_tool_scanner is required for RoboDK import.
+    # Calibration menu. Capture is read-only; saved station mappings still
+    # require independent physical calibration before production execution.
     _add_translated_menu("Calibration", "menu.calibration")
+    _add_translated_action("Calibration", capture_current_robodk_station_mapping,
+                           "action.capture_robodk_mapping")
     _add_translated_action("Calibration", load_scanner_tool_extrinsic,
                            "action.load_extrinsic")
     _add_translated_action("Calibration", clear_scanner_tool_extrinsic,

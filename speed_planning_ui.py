@@ -143,3 +143,34 @@ def get_robodk_import_settings(parent=None, import_kind="speed"):
         "first_move": first_move.currentData(),
         "replace": replace.isChecked(),
     }
+
+
+def get_robodk_mapping_settings(parent=None):
+    """Collect exact RoboDK item names for a read-only station capture."""
+    _QtCore, QtWidgets = _qt()
+    dialog = QtWidgets.QDialog(parent)
+    dialog.setWindowTitle(tr("dialog.robodk.mapping_title"))
+    dialog.setMinimumWidth(460)
+    layout = QtWidgets.QFormLayout(dialog)
+    robot = QtWidgets.QLineEdit("UR10")
+    frame = QtWidgets.QLineEdit("Frame 2")
+    tool = QtWidgets.QLineEdit("Creaform MetraSCAN")
+    explanation = QtWidgets.QLabel(tr("dialog.robodk.mapping_explanation"))
+    explanation.setWordWrap(True)
+    layout.addRow(explanation)
+    layout.addRow(tr("dialog.robodk.robot"), robot)
+    layout.addRow(tr("dialog.robodk.frame"), frame)
+    layout.addRow(tr("dialog.robodk.tool"), tool)
+    buttons = QtWidgets.QDialogButtonBox(
+        QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+    _translate_dialog_buttons(QtWidgets, buttons)
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout.addRow(buttons)
+    if _exec(dialog) != QtWidgets.QDialog.Accepted:
+        return None
+    return {
+        "robot_name": robot.text().strip(),
+        "frame_name": frame.text().strip(),
+        "tool_name": tool.text().strip(),
+    }

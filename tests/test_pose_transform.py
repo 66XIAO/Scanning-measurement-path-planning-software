@@ -8,8 +8,9 @@ import unittest
 import numpy as np
 
 from pose_transform import (
-    load_extrinsic_config, parse_extrinsic_config, pose_matrix, transform_pose_records,
-    transform_scanner_pose_to_tool,
+    load_extrinsic_config, parse_extrinsic_config, pose_matrix,
+    save_extrinsic_config, transform_pose_records,
+    transform_scanner_pose_to_tool, transform_workpiece_pose_to_base,
 )
 from export_utils import write_speed_plan_csv
 from speed_planning_core import plan_speed_profile
@@ -118,6 +119,58 @@ class PoseTransformTests(unittest.TestCase):
         self.assertTrue(metadata["extrinsic_validated"])
         self.assertFalse(metadata["physical_calibration_validated"])
         self.assertEqual(metadata["command_pose_frame"], "scanner_tcp")
+
+    def test_explicit_station_base_workpiece_chain_and_pose_transform(self):
+        data = config_data()
+        data["schema_version"] = "1.2"
+        data.update({
+            "robodk_base_name": "UR10 Base",
+            "T_station_robot_base": [
+                [1, 0, 0, 0], [0, 1, 0, 1900],
+                [0, 0, 1, 0], [0, 0, 0, 1]],
+            "T_station_reference_frame": [
+                [1, 0, 0, 437], [0, 1, 0, 1190],
+                [0, 0, 1, 150], [0, 0, 0, 1]],
+            "T_base_workpiece": [
+                [1, 0, 0, 437], [0, 1, 0, -710],
+                [0, 0, 1, 150], [0, 0, 0, 1]],
+        })
+        config = parse_extrinsic_config(data)
+        base_pose = transform_workpiece_pose_to_base(pose(z=30.0), config)
+        np.testing.assert_allclose(
+            [base_pose[axis] for axis in ("x", "y", "z")],
+            [447.0, -690.0, 180.0], atol=1e-9)
+        self.assertEqual(config.robodk_base_name, "UR10 Base")
+        self.assertEqual(
+            config.to_dict()["T_base_workpiece"], data["T_base_workpiece"])
+
+    def test_inconsistent_explicit_coordinate_chain_is_rejected(self):
+        data = config_data()
+        data["schema_version"] = "1.2"
+        data.update({
+            "T_station_robot_base": np.eye(4).tolist(),
+            "T_station_reference_frame": np.eye(4).tolist(),
+            "T_base_workpiece": [
+                [1, 0, 0, 1], [0, 1, 0, 0],
+                [0, 0, 1, 0], [0, 0, 0, 1]],
+        })
+        with self.assertRaisesRegex(ValueError, "Coordinate chain mismatch"):
+            parse_extrinsic_config(data)
+
+    def test_legacy_station_reference_without_base_chain_remains_supported(self):
+        data = config_data()
+        data["T_station_reference_frame"] = np.eye(4).tolist()
+        config = parse_extrinsic_config(data)
+        self.assertIsNotNone(config.t_station_reference_frame)
+        self.assertIsNone(config.t_base_workpiece)
+
+    def test_save_extrinsic_config_round_trip(self):
+        config = parse_extrinsic_config(config_data())
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "mapping.json")
+            saved = save_extrinsic_config(path, config)
+            loaded = load_extrinsic_config(saved)
+            self.assertEqual(loaded.to_dict(), config.to_dict())
 
     def test_csv_preserves_source_and_command_pose_with_metadata(self):
         matrix = np.eye(4)
