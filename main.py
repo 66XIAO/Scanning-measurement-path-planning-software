@@ -23,7 +23,7 @@ from OCC.Display.SimpleGui import init_display
 from OCC.Display.backend import get_qt_modules
 
 from config import VIEWPOINT_DISTANCE, NUM_CANDIDATES_PER_FACE, ZENITH_ANGLE_DEG
-from state import AppState
+from state import AppState, ViewpointRecord
 from geometry import (
     calculate_face_normal, calculate_workpiece_coordinate_size,
     segment_model, generate_viewpoint,
@@ -62,6 +62,10 @@ from robodk_bridge import (
 )
 from pose_transform import (
     load_extrinsic_config, save_extrinsic_config, transform_pose_records,
+)
+from reachability_repair import (
+    build_candidate_lookup, build_ordered_path_records, build_viewpoint_records,
+    compute_path_signature, repair_unreachable_points,
 )
 from cad_io import load_cad_shape
 from i18n import (
@@ -310,6 +314,89 @@ def _delete_existing_path():
         except Exception:
             pass
     state.optimal_path_objects.clear()
+
+
+def _resolve_optimal_viewpoint_records():
+    if len(state.optimal_viewpoint_records) == len(state.optimal_viewpoints_with_pose):
+        return list(state.optimal_viewpoint_records)
+    records = []
+    for index, (point, pose) in enumerate(state.optimal_viewpoints_with_pose):
+        if index < len(state.optimal_viewpoint_records):
+            existing = state.optimal_viewpoint_records[index]
+            face_index = getattr(existing, "face_index", index)
+            kind = getattr(existing, "kind", "optimal")
+            global_index = getattr(existing, "global_index", index)
+            candidate_index = getattr(existing, "candidate_index", 0)
+        else:
+            face_index = index
+            kind = "optimal"
+            global_index = index
+            candidate_index = 0
+        records.append(ViewpointRecord(
+            point=point, pose=pose, face_index=face_index, kind=kind,
+            global_index=global_index, candidate_index=candidate_index))
+    return records
+
+
+def _current_path_signature(records=None, metadata=None):
+    if records is None or metadata is None:
+        records, metadata = _ordered_pose_records()
+    return compute_path_signature(
+        metadata.get("source_pose_records", records),
+        state.optimal_path,
+        metadata)
+
+
+def _invalidate_after_path_mutation(keep_path=True):
+    state.speed_plan_result = None
+    state.last_speed_csv_path = ""
+    state.last_robodk_import.clear()
+    state.last_reachability_report.clear()
+    state.sensor_volumes_list.clear()
+    state.sensor_volume_objects.clear()
+    state.collision_detection_executed = False
+    state.sensor_volumes_created = False
+    if not keep_path:
+        state.optimal_path.clear()
+        state.last_path_length = 0.0
+        for obj in state.optimal_path_objects:
+            try:
+                display.Context.Erase(obj, True)
+            except Exception:
+                pass
+        state.optimal_path_objects.clear()
+    else:
+        for obj in state.optimal_path_objects:
+            try:
+                display.Context.Erase(obj, True)
+            except Exception:
+                pass
+        state.optimal_path_objects.clear()
+        if state.optimal_path and state.optimal_viewpoints:
+            dist_matrix = build_distance_matrix(state.optimal_viewpoints)
+            state.last_path_length = calculate_path_length(state.optimal_path, dist_matrix)
+    _do_render(fit_all=True)
+
+
+def _repair_settings_from_metadata(pose_metadata):
+    return {
+        "robot_name": pose_metadata.get("expected_robodk_robot_name") or "UR10",
+        "frame_name": pose_metadata.get("expected_robodk_frame_name") or "Frame 2",
+        "tool_name": pose_metadata.get("expected_robodk_tool_name") or
+                     "Creaform MetraSCAN",
+    }
+
+
+def _run_path_algorithm_after_repair(algorithm):
+    selected = algorithm or state.last_path_algorithm or "greedy"
+    if selected == "sequential":
+        connect_sequentially()
+    elif selected == "abc":
+        solve_with_abc_algorithm()
+    elif selected == "mscga":
+        solve_with_mscga_algorithm()
+    else:
+        solve_with_greedy_algorithm()
 
 
 def _confirm_path_prompt():
@@ -629,6 +716,9 @@ def generate_center_viewpoints(event=None):
         state.view_points.clear()
         state.center_view_points.clear()
         state.center_view_points_with_pose.clear()
+        state.viewpoint_records.clear()
+        state.center_viewpoint_records.clear()
+        state.optimal_viewpoint_records.clear()
 
         for obj in normal_line_objects:
             try:
@@ -646,6 +736,12 @@ def generate_center_viewpoints(event=None):
         state.center_view_points = center_vps
         state.view_points = list(center_vps)
         state.center_view_points_with_pose = center_vps_with_pose
+        state.center_viewpoint_records = [
+            ViewpointRecord(
+                point=vp, pose=pose, face_index=index, kind="center",
+                global_index=index, candidate_index=0)
+            for index, (vp, pose) in enumerate(center_vps_with_pose)
+        ]
         normal_line_objects.extend(line_objs)
 
         display.FitAll()
@@ -666,6 +762,9 @@ def generate_candidate_viewpoints(event=None):
         state.center_view_points.clear()
         state.center_view_points_with_pose.clear()
         state.view_points_with_pose.clear()
+        state.viewpoint_records.clear()
+        state.center_viewpoint_records.clear()
+        state.optimal_viewpoint_records.clear()
 
         for obj in normal_line_objects:
             try:
@@ -686,6 +785,10 @@ def generate_candidate_viewpoints(event=None):
         state.view_points_with_pose = all_vps_with_pose
         state.center_view_points_with_pose = [
             (vp, pose) for vp, pose in all_vps_with_pose[:len(center_vps)]]
+        state.viewpoint_records = build_viewpoint_records(
+            all_vps_with_pose, len(state.current_faces), NUM_CANDIDATES_PER_FACE)
+        state.center_viewpoint_records = list(
+            state.viewpoint_records[:len(center_vps)])
         normal_line_objects.extend(line_objs)
         state.coordinate_systems.extend(coord_sys)
 
@@ -709,6 +812,7 @@ def filter_optimal_viewpoints(event=None):
     try:
         state.optimal_viewpoints.clear()
         state.optimal_viewpoints_with_pose.clear()
+        state.optimal_viewpoint_records.clear()
 
         if not state.view_points:
             generate_candidate_viewpoints()
@@ -726,8 +830,11 @@ def filter_optimal_viewpoints(event=None):
             if all_with_pose:
                 candidates = ordered_face_candidates(
                     all_with_pose, face_idx, num_faces, NUM_CANDIDATES_PER_FACE)
+                candidate_records = ordered_face_candidates(
+                    state.viewpoint_records, face_idx, num_faces, NUM_CANDIDATES_PER_FACE)
             else:
                 candidates = []
+                candidate_records = []
                 for vp in state.view_points:
                     d = point_distance(vp, face_center)
                     if abs(d - VIEWPOINT_DISTANCE) < 50:
@@ -741,9 +848,20 @@ def filter_optimal_viewpoints(event=None):
 
             best_vp, best_pose = choose_closest_to_distance(
                 candidates, face_center, VIEWPOINT_DISTANCE, point_distance)
+            best_index = candidates.index((best_vp, best_pose)) if candidates else -1
+            best_record = None
+            if candidate_records and 0 <= best_index < len(candidate_records):
+                best_record = candidate_records[best_index]
+            elif state.viewpoint_records:
+                best_record = state.viewpoint_records[face_idx]
+            if best_record is None:
+                best_record = ViewpointRecord(
+                    point=best_vp, pose=best_pose, face_index=face_idx,
+                    kind="optimal", global_index=face_idx, candidate_index=0)
 
             state.optimal_viewpoints.append(best_vp)
             state.optimal_viewpoints_with_pose.append((best_vp, best_pose))
+            state.optimal_viewpoint_records.append(best_record)
 
         # Display optimal viewpoints (red spheres)
         for vp in state.optimal_viewpoints:
@@ -988,6 +1106,7 @@ def connect_sequentially(event=None):
                 tr("common.prompt"), tr("message.require.two_viewpoints"))
             return
         state.optimal_path = list(range(n))
+        state.last_path_algorithm = "sequential"
         dist_matrix = build_distance_matrix(state.optimal_viewpoints)
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         total = calculate_path_length(state.optimal_path, dist_matrix)
@@ -1011,6 +1130,7 @@ def solve_with_greedy_algorithm(event=None):
     try:
         _delete_existing_path()
         state.optimal_path, dist_matrix = solve_greedy_open_path(state.optimal_viewpoints)
+        state.last_path_algorithm = "greedy"
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         total = calculate_path_length(state.optimal_path, dist_matrix)
         state.last_path_length = total
@@ -1042,6 +1162,7 @@ def solve_with_abc_algorithm(event=None):
 
     def on_success(result):
         state.optimal_path = list(result["best_tour"])
+        state.last_path_algorithm = "abc"
         state.last_path_length = result["best_length"]
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         display.FitAll()
@@ -1080,6 +1201,7 @@ def solve_with_mscga_algorithm(event=None):
 
     def on_success(result):
         state.optimal_path = list(result["best_tour"])
+        state.last_path_algorithm = "mscga"
         state.last_path_length = result["best_length"]
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         display.FitAll()
@@ -1108,6 +1230,7 @@ def plan_path(event=None):
     try:
         _delete_existing_path()
         state.optimal_path, dist_matrix = solve_greedy_open_path(state.optimal_viewpoints)
+        state.last_path_algorithm = "greedy"
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         total = calculate_path_length(state.optimal_path, dist_matrix)
         state.last_path_length = total
@@ -1255,24 +1378,23 @@ def clear_scanner_tool_extrinsic(event=None):
 def _ordered_pose_records():
     if not state.optimal_viewpoints_with_pose:
         raise ValueError("No path poses are available")
-    ordered = list(state.optimal_path) if state.optimal_path else list(range(len(state.optimal_viewpoints_with_pose)))
-    records = []
-    for order_index, viewpoint_index in enumerate(ordered, start=1):
-        if viewpoint_index < 0 or viewpoint_index >= len(state.optimal_viewpoints_with_pose):
-            raise IndexError("Path index out of range: {}".format(viewpoint_index))
-        point, pose = state.optimal_viewpoints_with_pose[viewpoint_index]
-        qw, qx, qy, qz = pose
-        records.append({
-            "index": order_index,
-            "x": point.X(), "y": point.Y(), "z": point.Z(),
-            "qw": qw, "qx": qx, "qy": qy, "qz": qz,
-        })
+    optimal_records = _resolve_optimal_viewpoint_records()
+    records = build_ordered_path_records(
+        state.optimal_path, state.optimal_viewpoints_with_pose, optimal_records)
     if state.extrinsic_config is not None:
         command_records, metadata = transform_pose_records(records, state.extrinsic_config)
         metadata["extrinsic_config_path"] = state.extrinsic_config_path
         metadata["extrinsic_config_sha256"] = state.extrinsic_config_sha256
+        metadata["path_signature"] = compute_path_signature(
+            metadata.get("source_pose_records", records), state.optimal_path, metadata)
+        metadata["path_provenance"] = [
+            {key: record.get(key) for key in (
+                "index", "optimal_index", "face_index", "candidate_index",
+                "global_index", "kind")}
+            for record in metadata.get("source_pose_records", records)
+        ]
         return command_records, metadata
-    return records, {
+    metadata = {
         "extrinsic_applied": False,
         "extrinsic_validated": False,
         "extrinsic_config_id": "",
@@ -1284,6 +1406,14 @@ def _ordered_pose_records():
         "extrinsic_config_sha256": "",
         "source_pose_records": [dict(record) for record in records],
     }
+    metadata["path_signature"] = compute_path_signature(records, state.optimal_path, metadata)
+    metadata["path_provenance"] = [
+        {key: record.get(key) for key in (
+            "index", "optimal_index", "face_index", "candidate_index",
+            "global_index", "kind")}
+        for record in records
+    ]
+    return records, metadata
 
 
 def import_planned_path_to_robodk(event=None):
@@ -1367,8 +1497,30 @@ def analyze_planned_path_reachability(event=None):
         "tool_name": pose_metadata.get("expected_robodk_tool_name") or
                      "Creaform MetraSCAN",
     }
+    initial_signature = pose_metadata.get("path_signature") or _current_path_signature(
+        records, pose_metadata)
 
     def on_success(report):
+        try:
+            current_records, current_metadata = _ordered_pose_records()
+            if _current_path_signature(current_records, current_metadata) != initial_signature:
+                show_topmost_message(
+                    tr("common.warning"),
+                    tr("message.robodk.reachability_stale_abort"),
+                    type="warning")
+                return
+        except Exception as exc:
+            show_topmost_message(
+                tr("common.error"),
+                tr("message.path.input_invalid", error=exc),
+                type="error")
+            return
+        report = dict(report)
+        report["path_signature"] = pose_metadata.get(
+            "path_signature", initial_signature)
+        report["path_provenance"] = pose_metadata.get("path_provenance", [])
+        report["source_pose_records"] = pose_metadata.get(
+            "source_pose_records", records)
         state.last_reachability_report = report
         available = ", ".join(
             str(index) for index in report["reachable_indices"]
@@ -1458,6 +1610,164 @@ def plan_path_speeds(event=None):
     run_background_task(tr("menu.speed_planning"), tr("message.speed.running"),
                         work,
                         on_success, on_error)
+
+
+def repair_ur10_reachability_failures(event=None):
+    """Replace unreachable ordered path points with same-face reachable candidates."""
+    if not state.optimal_path or not state.optimal_viewpoints_with_pose:
+        show_topmost_message(tr("common.prompt"), tr("message.require.path"))
+        return
+    if not state.view_points_with_pose:
+        show_topmost_message(
+            tr("common.prompt"),
+            tr("message.robodk.reachability_repair_no_candidates"),
+            type="warning")
+        return
+    try:
+        if len(state.viewpoint_records) != len(state.view_points_with_pose):
+            state.viewpoint_records = build_viewpoint_records(
+                state.view_points_with_pose, len(state.current_faces),
+                NUM_CANDIDATES_PER_FACE)
+            state.center_viewpoint_records = list(
+                state.viewpoint_records[:len(state.current_faces)])
+        if len(state.optimal_viewpoint_records) != len(state.optimal_viewpoints_with_pose):
+            state.optimal_viewpoint_records = _resolve_optimal_viewpoint_records()
+        records, pose_metadata = _ordered_pose_records()
+    except Exception as exc:
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.robodk.reachability_repair_missing_provenance", error=exc),
+            type="error")
+        return
+    if (not pose_metadata.get("extrinsic_validated", False) or
+            pose_metadata.get("T_base_workpiece") is None):
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.robodk.reachability_calibration_required"),
+            type="error")
+        return
+
+    settings = _repair_settings_from_metadata(pose_metadata)
+    initial_signature = pose_metadata.get("path_signature") or _current_path_signature(
+        records, pose_metadata)
+    source_records = pose_metadata.get("source_pose_records", records)
+    last_report = state.last_reachability_report or {}
+    use_cached_report = last_report.get("path_signature") == initial_signature
+
+    def evaluate_source_records(source):
+        command_records, metadata = transform_pose_records(source, state.extrinsic_config)
+        metadata["extrinsic_config_path"] = state.extrinsic_config_path
+        metadata["extrinsic_config_sha256"] = state.extrinsic_config_sha256
+        report = dict(analyze_ur10_reachability(
+            command_records, metadata, **settings))
+        report["source_pose_records"] = [dict(record) for record in source]
+        report["path_signature"] = compute_path_signature(
+            source, state.optimal_path, metadata)
+        report["path_provenance"] = [
+            {key: record.get(key) for key in (
+                "index", "optimal_index", "face_index", "candidate_index",
+                "global_index", "kind")}
+            for record in source
+        ]
+        return report
+
+    def work():
+        initial_report = last_report if use_cached_report else evaluate_source_records(source_records)
+        if initial_report.get("all_reachable", False):
+            return {"status": "all_reachable", "report": initial_report}
+        repair_result = repair_unreachable_points(
+            source_records=source_records,
+            pose_metadata=pose_metadata,
+            optimal_path=state.optimal_path,
+            optimal_viewpoints=state.optimal_viewpoints,
+            optimal_viewpoints_with_pose=state.optimal_viewpoints_with_pose,
+            optimal_viewpoint_records=state.optimal_viewpoint_records,
+            candidate_records=state.viewpoint_records,
+            evaluate_fn=evaluate_source_records,
+            face_count=len(state.current_faces),
+            candidates_per_face=NUM_CANDIDATES_PER_FACE)
+        return {"status": "repaired", "result": repair_result}
+
+    def on_success(payload):
+        try:
+            current_records, current_metadata = _ordered_pose_records()
+            if _current_path_signature(current_records, current_metadata) != initial_signature:
+                show_topmost_message(
+                    tr("common.warning"),
+                    tr("message.robodk.reachability_repair_stale_abort"),
+                    type="warning")
+                return
+        except Exception as exc:
+            show_topmost_message(
+                tr("common.error"),
+                tr("message.path.input_invalid", error=exc),
+                type="error")
+            return
+
+        if payload["status"] == "all_reachable":
+            report = dict(payload["report"])
+            report["path_signature"] = initial_signature
+            state.last_reachability_report = report
+            show_topmost_message(
+                tr("dialog.robodk.reachability_repair_title"),
+                tr("message.robodk.reachability_repair_no_failures"),
+                type="info")
+            return
+
+        repair_result = payload["result"]
+        if not repair_result.replacements:
+            state.last_reachability_report = dict(repair_result.final_report)
+            show_topmost_message(
+                tr("dialog.robodk.reachability_repair_title"),
+                tr("message.robodk.reachability_repair_none",
+                   unrepaired=", ".join(str(i) for i in repair_result.unrepaired_indices) or tr("common.none")),
+                type="warning")
+            return
+
+        previous_algorithm = state.last_path_algorithm or "greedy"
+        state.optimal_viewpoints = list(repair_result.updated_optimal_viewpoints)
+        state.optimal_viewpoints_with_pose = list(
+            repair_result.updated_optimal_viewpoints_with_pose)
+        state.optimal_viewpoint_records = list(
+            repair_result.updated_optimal_viewpoint_records)
+        _invalidate_after_path_mutation(keep_path=True)
+        final_report = dict(repair_result.final_report)
+        final_report["source_pose_records"] = repair_result.final_source_records
+        final_report["path_signature"] = compute_path_signature(
+            repair_result.final_source_records, state.optimal_path, pose_metadata)
+        state.last_reachability_report = final_report
+
+        replaced = len(repair_result.replacements)
+        unrepaired = ", ".join(str(i) for i in repair_result.unrepaired_indices) or tr("common.none")
+        message = tr(
+            "message.robodk.reachability_repair_complete",
+            replaced=replaced,
+            unrepaired=unrepaired,
+            remaining=final_report.get("unreachable_count", 0))
+        _update_workflow(message)
+        answer = show_topmost_message(
+            tr("dialog.robodk.reachability_repair_title"),
+            message + "\n\n" + tr(
+                "message.robodk.reachability_repair_replan_prompt",
+                algorithm=previous_algorithm),
+            type="question")
+        if answer == "yes":
+            _run_path_algorithm_after_repair(previous_algorithm)
+        else:
+            _update_workflow(tr(
+                "message.robodk.reachability_repair_keep_order_complete",
+                length=state.last_path_length))
+
+    def on_error(error_text):
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.robodk.reachability_repair_failed", error=error_text),
+            type="error")
+
+    run_background_task(
+        tr("dialog.robodk.reachability_repair_title"),
+        tr("message.robodk.reachability_repair_running"),
+        work, on_success, on_error)
 
 
 def export_speed_plan_to_csv(event=None):
@@ -1705,6 +2015,8 @@ def run():
                            "action.solve_mscga")
     _add_translated_action("Path Planning", analyze_planned_path_reachability,
                            "action.analyze_ur10_reachability")
+    _add_translated_action("Path Planning", repair_ur10_reachability_failures,
+                           "action.repair_ur10_reachability")
     _add_translated_action("Path Planning", import_planned_path_to_robodk,
                            "action.import_planned_path_robodk")
 

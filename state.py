@@ -19,6 +19,8 @@ class ViewpointRecord:
     kind: str
     valid: bool = True
     collision: bool = False
+    global_index: int = -1
+    candidate_index: int = -1
 
 
 @dataclass
@@ -42,14 +44,18 @@ class AppState:
     # Viewpoints with pose
     center_view_points_with_pose: list = field(default_factory=list)
     view_points_with_pose: list = field(default_factory=list)
+    viewpoint_records: list = field(default_factory=list)
+    center_viewpoint_records: list = field(default_factory=list)
 
     # Optimal
     optimal_viewpoints: list = field(default_factory=list)
     optimal_viewpoints_with_pose: list = field(default_factory=list)
+    optimal_viewpoint_records: list = field(default_factory=list)
 
     # Path
     optimal_path: list = field(default_factory=list)
     last_path_length: float = 0.0
+    last_path_algorithm: str = ""
 
     # Speed planning (created only after an ordered path exists)
     speed_plan_result: object = None
@@ -114,10 +120,14 @@ class AppState:
         self.view_points.clear()
         self.center_view_points_with_pose.clear()
         self.view_points_with_pose.clear()
+        self.viewpoint_records.clear()
+        self.center_viewpoint_records.clear()
         self.optimal_viewpoints.clear()
         self.optimal_viewpoints_with_pose.clear()
+        self.optimal_viewpoint_records.clear()
         self.optimal_path.clear()
         self.last_path_length = 0.0
+        self.last_path_algorithm = ""
         self.speed_plan_result = None
         self.last_speed_csv_path = ""
         self.last_robodk_import.clear()
@@ -146,12 +156,16 @@ class AppState:
         self.view_points.clear()
         self.center_view_points_with_pose.clear()
         self.view_points_with_pose.clear()
+        self.viewpoint_records.clear()
+        self.center_viewpoint_records.clear()
         self.optimal_viewpoints.clear()
         self.optimal_viewpoints_with_pose.clear()
+        self.optimal_viewpoint_records.clear()
         self.sensor_volumes_list.clear()
         self.face_obbs.clear()
         self.optimal_path.clear()
         self.last_path_length = 0.0
+        self.last_path_algorithm = ""
         self.speed_plan_result = None
         self.last_speed_csv_path = ""
         self.last_robodk_import.clear()
