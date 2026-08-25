@@ -6,9 +6,7 @@
 
 ## 软件演示
 
-<p align="center">
-  <img src="docs/assets/software_demo.gif" alt="软件工作流程演示" width="720">
-</p>
+![软件工作流程演示](./docs/assets/software_demo.gif)
 
 > 上述 GIF 为根据项目提供的完整软件录屏生成的 README 展示版，在保留完整流程时长的基础上进行了尺寸与帧率优化，以降低仓库页面加载开销。
 
