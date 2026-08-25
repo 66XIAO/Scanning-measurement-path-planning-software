@@ -6,9 +6,7 @@ A research-oriented desktop application for **CAD-based robotic scanning and mea
 
 ## Demo
 
-<p align="center">
-  <img src="docs/assets/software_demo.gif" alt="Software workflow demo" width="720">
-</p>
+![Software workflow demo](./docs/assets/software_demo.gif)
 
 > The GIF above is an optimized preview generated from the full software recording supplied with the project.
 
