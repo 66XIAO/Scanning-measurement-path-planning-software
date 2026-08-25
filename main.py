@@ -75,6 +75,9 @@ from i18n import (
 )
 from model_drop import install_model_drop_support
 from surface_segmentation import is_surface_patch
+from ui_theme import (
+    apply_application_theme, create_primary_toolbar, decorate_action,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +245,7 @@ def _add_translated_action(stable_menu_name, callback, translation_key):
     action = menu.actions()[-1]
     action.setProperty("i18n_key", translation_key)
     action.setText(tr(translation_key))
+    decorate_action(QtGui, action, translation_key)
     _translated_actions.append(action)
     return action
 
@@ -1951,6 +1955,8 @@ def run():
     # Users can access it later via Help -> show_usage_instructions.
     print(USAGE_TEXT_INLINE)
 
+    apply_application_theme(QtCore, QtGui, QtWidgets, get_main_window())
+
     # Menu IDs are stable; visible labels are read from the active JSON catalog.
     _add_translated_menu("File", "menu.file")
     _add_translated_action("File", import_model, "action.import_model")
@@ -2061,6 +2067,13 @@ def run():
     _add_translated_action("Help", create_layer_panel_ui,
                            "action.create_layer_panel")
     _add_translated_action("Help", show_usage_instructions, "action.show_usage")
+
+    actions_by_key = {
+        str(action.property("i18n_key")): action
+        for action in _translated_actions
+        if action.property("i18n_key")
+    }
+    create_primary_toolbar(QtCore, QtWidgets, get_main_window(), actions_by_key)
 
     if _language_subscription is None:
         _language_subscription = subscribe_language_changed(_retranslate_main_ui)
