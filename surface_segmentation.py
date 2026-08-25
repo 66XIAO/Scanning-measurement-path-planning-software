@@ -139,7 +139,12 @@ def segment_shape_mesh_grid(shape, u=8, v=6, linear_deflection=None,
     # Viewer triangulations can be much finer than this workflow requires.
     # Removing only cached polygonal data makes the runtime deterministic; the
     # exact BRep geometry and trimming wires remain unchanged.
-    breptools.Clean(shape, True)
+    try:
+        # OpenCascade 7.5+ accepts the force flag; pythonocc 7.4 exposes only
+        # Clean(shape). Both variants remove cached triangulation data.
+        breptools.Clean(shape, True)
+    except TypeError:
+        breptools.Clean(shape)
     mesh_started = time.perf_counter()
     mesher = BRepMesh_IncrementalMesh(
         shape, float(linear_deflection), False,
@@ -509,7 +514,11 @@ def _surface_area(shape):
 
 
 def _shape_validity(shape):
-    analyzer = BRepCheck_Analyzer(shape, True, True, True)
+    try:
+        analyzer = BRepCheck_Analyzer(shape, True, True, True)
+    except TypeError:
+        # pythonocc 7.4 exposes only (shape, geometric_controls).
+        analyzer = BRepCheck_Analyzer(shape, True)
     valid = analyzer.IsValid()
     if valid:
         return True, []

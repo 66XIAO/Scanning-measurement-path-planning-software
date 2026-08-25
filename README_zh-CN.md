@@ -120,15 +120,22 @@ UR10 可达性检查
 .\run_integrated_app.ps1
 ```
 
-当本地 PythonOCC/RoboDK 环境已经正确配置时，也可使用：
+只检查本机环境而不打开界面：
 
 ```powershell
-python app_bootstrap.py
+.\start_software.cmd --check
 ```
 
 ### 当前环境说明
 
-仓库中的 `app_bootstrap.py` 反映了作者当前开发机的环境复用方案，其中包含 PythonOCC 与 RoboDK 的默认本机路径。这些路径**不是可直接迁移到其他计算机的通用配置**；在其他环境部署时，应根据本机安装位置进行调整，并优先使用项目支持的环境变量/配置方式。
+启动器通过 PATH 自动发现 Conda，默认使用 `base` 环境，并在打开 UI 前检查 NumPy、PythonOCC 和 PyQt5/PySide6。若依赖位于其他已有环境，可先设置：
+
+```powershell
+$env:SCANNING_APP_CONDA_ENV = '环境名称'
+.\start_software.cmd
+```
+
+RoboDK Python API 路径依次从 Git 忽略的本机配置、`ROBODK_API_PATH` / `ROBODK_INSTALL_DIR`、PATH、Windows 注册表或操作系统标准安装目录中发现；跟踪代码中不保存本机绝对路径。RoboDK 为可选集成，不影响软件的环境预检。
 
 相关说明：
 

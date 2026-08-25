@@ -20,6 +20,7 @@ from OCC.Core.gp import gp_Pnt, gp_Vec
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeSphere
 from OCC.Display.OCCViewer import rgb_color
 from OCC.Display.SimpleGui import init_display
+from OCC.Display import backend as occ_backend
 from OCC.Display.backend import get_qt_modules
 
 from config import VIEWPOINT_DISTANCE, NUM_CANDIDATES_PER_FACE, ZENITH_ANGLE_DEG
@@ -82,10 +83,12 @@ from surface_segmentation import is_surface_patch
 
 try:
     import PyQt5  # noqa: F401
-    QT_BACKEND = "pyqt5"
+    # pythonocc 7.4 names this backend ``qt-pyqt5``; newer releases expose
+    # their own constant as well, so prefer the installed version's token.
+    QT_BACKEND = getattr(occ_backend, "PYQT5", "pyqt5")
 except ImportError:
     import PySide6  # noqa: F401
-    QT_BACKEND = "pyside6"
+    QT_BACKEND = getattr(occ_backend, "PYSIDE6", "pyside6")
 
 display, start_display, add_menu, add_function_to_menu = init_display(QT_BACKEND)
 QtCore, QtGui, QtWidgets, QtOpenGL = get_qt_modules()

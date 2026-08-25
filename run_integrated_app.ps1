@@ -1,21 +1,35 @@
+param(
+    [switch]$CheckOnly
+)
+
 $ErrorActionPreference = 'Stop'
-
-$TestPrefix = 'D:\Env\conda\2024\envs\test'
-$PythonOccPrefix = 'D:\Env\conda\2024\envs\Pythonocc'
 $Bootstrap = Join-Path $PSScriptRoot 'app_bootstrap.py'
-
-if (-not (Test-Path -LiteralPath (Join-Path $TestPrefix 'python.exe'))) {
-    throw "Working Conda interpreter not found: $TestPrefix"
+$LocalConfig = Join-Path $PSScriptRoot 'config\local_environment.ps1'
+if (Test-Path -LiteralPath $LocalConfig) {
+    . $LocalConfig
 }
-if (-not (Test-Path -LiteralPath (Join-Path $PythonOccPrefix 'Lib\site-packages\OCC'))) {
-    throw "Existing Pythonocc packages not found: $PythonOccPrefix"
+$CondaEnvironment = if ($env:SCANNING_APP_CONDA_ENV) {
+    $env:SCANNING_APP_CONDA_ENV
+} else {
+    'base'
 }
 
-$env:CONDA_PREFIX = $TestPrefix
-$env:PYTHONOCC_PREFIX = $PythonOccPrefix
-$env:ROBODK_API_PATH = 'D:\RoboDK\Python37\lib\site-packages'
-$env:QT_PLUGIN_PATH = Join-Path $PythonOccPrefix 'Library\lib\qt6\plugins'
-$env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:QT_PLUGIN_PATH 'platforms'
-$env:PATH = "$TestPrefix;$TestPrefix\Library\bin;$TestPrefix\Scripts;$env:PATH"
+$CondaCommand = Get-Command conda -ErrorAction SilentlyContinue
+if (-not $CondaCommand) {
+    throw 'Conda was not found on PATH. Install/activate Conda or add its Scripts directory to PATH.'
+}
+if (-not (Test-Path -LiteralPath $Bootstrap)) {
+    throw "Application bootstrap not found: $Bootstrap"
+}
 
-& (Join-Path $TestPrefix 'python.exe') $Bootstrap
+Write-Host "Using Conda environment: $CondaEnvironment"
+$Arguments = @('run', '--no-capture-output', '-n', $CondaEnvironment, 'python', $Bootstrap)
+if ($CheckOnly) {
+    $Arguments += '--check'
+}
+
+& $CondaCommand.Source @Arguments
+$AppExitCode = $LASTEXITCODE
+if ($AppExitCode -ne 0) {
+    throw "Application environment check/start failed with exit code $AppExitCode."
+}

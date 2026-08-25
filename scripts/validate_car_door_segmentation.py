@@ -12,15 +12,14 @@ import sys
 import time
 
 
-PYTHONOCC_PREFIX = os.environ.get(
-    "PYTHONOCC_PREFIX", r"D:\Env\conda\2024\envs\Pythonocc")
-SITE_PACKAGES = os.path.join(PYTHONOCC_PREFIX, "Lib", "site-packages")
-DLL_DIRECTORY = os.path.join(PYTHONOCC_PREFIX, "Library", "bin")
-
-if hasattr(os, "add_dll_directory"):
-    _dll_handle = os.add_dll_directory(DLL_DIRECTORY)
-if SITE_PACKAGES not in sys.path:
-    sys.path.insert(0, SITE_PACKAGES)
+PYTHONOCC_PREFIX = os.environ.get("PYTHONOCC_PREFIX", "").strip()
+if PYTHONOCC_PREFIX:
+    SITE_PACKAGES = os.path.join(PYTHONOCC_PREFIX, "Lib", "site-packages")
+    DLL_DIRECTORY = os.path.join(PYTHONOCC_PREFIX, "Library", "bin")
+    if hasattr(os, "add_dll_directory") and os.path.isdir(DLL_DIRECTORY):
+        _dll_handle = os.add_dll_directory(DLL_DIRECTORY)
+    if os.path.isdir(SITE_PACKAGES) and SITE_PACKAGES not in sys.path:
+        sys.path.insert(0, SITE_PACKAGES)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -56,9 +55,15 @@ def validate_model(file_path, u, v, linear_deflection=None,
         for index, patch in enumerate(patches):
             if not is_surface_patch(patch):
                 continue
-            classifier = BRepClass_FaceClassifier(
-                patch.source_face,
-                gp_Pnt2d(*patch.representative_uv), 1e-6, True)
+            try:
+                classifier = BRepClass_FaceClassifier(
+                    patch.source_face,
+                    gp_Pnt2d(*patch.representative_uv), 1e-6, True)
+            except TypeError:
+                # pythonocc 7.4 exposes the three-argument constructor.
+                classifier = BRepClass_FaceClassifier(
+                    patch.source_face,
+                    gp_Pnt2d(*patch.representative_uv), 1e-6)
             if classifier.State() not in (TopAbs_IN, TopAbs_ON):
                 invalid_center_indices.append(index)
             if abs(patch.normal.Magnitude() - 1.0) > 1e-6:

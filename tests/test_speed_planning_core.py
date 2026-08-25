@@ -116,7 +116,8 @@ class SpeedPlanningTests(unittest.TestCase):
         ]
         importer_dir = next((path for path in importer_candidates
                              if os.path.isfile(os.path.join(path, "pose_speed_importer.py"))), None)
-        self.assertIsNotNone(importer_dir, "Cannot locate Speed planning Output importer")
+        if importer_dir is None:
+            self.skipTest("external Speed planning Output importer is not installed")
         sys.path.insert(0, importer_dir)
         try:
             from pose_speed_importer import load_pose_speed_csv

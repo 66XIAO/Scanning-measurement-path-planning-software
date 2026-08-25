@@ -15,3 +15,4 @@ calibration/*.json
 !calibration/*.example.json
 archive/qwen/
 diagnostics/
+config/local_environment.ps1

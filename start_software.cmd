@@ -9,9 +9,8 @@ if not exist "%~dp0run_integrated_app.ps1" (
 )
 
 if /I "%~1"=="--check" (
-    echo Launcher found: "%~dp0run_integrated_app.ps1"
-    echo Working directory: "%CD%"
-    exit /b 0
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0run_integrated_app.ps1" -CheckOnly
+    exit /b %ERRORLEVEL%
 )
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0run_integrated_app.ps1"

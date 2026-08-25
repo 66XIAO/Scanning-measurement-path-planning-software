@@ -1,41 +1,96 @@
-"""Launch the integrated app using existing Conda environments only.
+"""Portable launcher and dependency preflight for the integrated application.
 
-The historical Pythonocc environment's interpreter currently exits with
-Windows status 0xC0000022.  The `test` Conda environment has the same Python
-3.12 ABI, so this bootstrap uses its working interpreter and loads OCC/PySide6
-from the existing Pythonocc environment.  No package installation is needed.
+The PowerShell launcher selects a Conda-managed interpreter. This module then
+verifies that the selected environment contains the native GUI/CAD stack before
+``main`` is imported, so environment problems produce an actionable message.
 """
 
+from __future__ import print_function
+
+import argparse
+import importlib
 import os
+from pathlib import Path
 import sys
 
+from robodk_discovery import discover_robodk_api_path
 
-PYTHONOCC_PREFIX = os.environ.get(
-    "PYTHONOCC_PREFIX", r"D:\Env\conda\2024\envs\Pythonocc")
-PYTHONOCC_SITE_PACKAGES = os.path.join(PYTHONOCC_PREFIX, "Lib", "site-packages")
-PYTHONOCC_DLLS = os.path.join(PYTHONOCC_PREFIX, "Library", "bin")
-QT_PLUGIN_ROOT = os.path.join(PYTHONOCC_PREFIX, "Library", "lib", "qt6", "plugins")
-QT_PLATFORM_PLUGINS = os.path.join(QT_PLUGIN_ROOT, "platforms")
 
-if not os.path.isdir(PYTHONOCC_SITE_PACKAGES):
-    raise RuntimeError("Pythonocc site-packages not found: {}".format(PYTHONOCC_SITE_PACKAGES))
-if not os.path.isdir(PYTHONOCC_DLLS):
-    raise RuntimeError("Pythonocc DLL directory not found: {}".format(PYTHONOCC_DLLS))
+PROJECT_ROOT = Path(__file__).resolve().parent
 
-if hasattr(os, "add_dll_directory"):
-    _occ_dll_handle = os.add_dll_directory(PYTHONOCC_DLLS)
-    _occ_root_handle = os.add_dll_directory(PYTHONOCC_PREFIX)
-if PYTHONOCC_SITE_PACKAGES not in sys.path:
-    sys.path.insert(0, PYTHONOCC_SITE_PACKAGES)
 
-os.environ.setdefault("QT_API", "pyside6")
-os.environ.setdefault("PYTHONOCC_BACKEND", "pyside6")
-os.environ.setdefault("QT_PLUGIN_PATH", QT_PLUGIN_ROOT)
-os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", QT_PLATFORM_PLUGINS)
-os.environ.setdefault("ROBODK_API_PATH", r"D:\RoboDK\Python37\lib\site-packages")
+def _configure_optional_robodk_api():
+    """Configure a discovered RoboDK API without embedding a machine path."""
+    discovered = discover_robodk_api_path()
+    if discovered:
+        os.environ["ROBODK_API_PATH"] = discovered
+    return discovered
 
-from main import run
+
+def preflight():
+    """Return an environment summary or raise for a missing requirement."""
+    versions = {"python": sys.version.split()[0], "executable": sys.executable}
+    failures = []
+    for module_name in ("numpy", "OCC.Core.gp", "OCC.Display.OCCViewer"):
+        try:
+            module = importlib.import_module(module_name)
+            root_name = module_name.split(".")[0]
+            versions.setdefault(root_name, getattr(module, "__version__", "available"))
+        except Exception as exc:
+            failures.append("{}: {}".format(module_name, exc))
+
+    qt_backend = None
+    for backend, module_name in (("PyQt5", "PyQt5.QtWidgets"),
+                                 ("PySide6", "PySide6.QtWidgets")):
+        try:
+            importlib.import_module(module_name)
+            qt_backend = backend
+            break
+        except Exception:
+            pass
+    if qt_backend is None:
+        failures.append("Qt: neither PyQt5 nor PySide6 can load")
+    else:
+        versions["qt"] = qt_backend
+
+    versions["robodk_api"] = _configure_optional_robodk_api() or "not found (optional)"
+    if failures:
+        message = "\n  - ".join(["Selected Conda environment is not usable:"] + failures)
+        raise RuntimeError(
+            message +
+            "\nChoose another environment with SCANNING_APP_CONDA_ENV, for example:\n"
+            "  $env:SCANNING_APP_CONDA_ENV = 'my-pythonocc-env'")
+    return versions
+
+
+def _print_summary(summary):
+    print("Environment preflight passed")
+    print("  Python: {} ({})".format(summary["python"], summary["executable"]))
+    print("  Qt: {}".format(summary["qt"]))
+    print("  PythonOCC: {}".format(summary.get("OCC", "available")))
+    print("  NumPy: {}".format(summary.get("numpy", "available")))
+    print("  RoboDK API: {}".format(summary["robodk_api"]))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true",
+                        help="validate the selected environment without opening the GUI")
+    args = parser.parse_args(argv)
+    summary = preflight()
+    _print_summary(summary)
+    if args.check:
+        return 0
+
+    os.chdir(str(PROJECT_ROOT))
+    from main import run
+    run()
+    return 0
 
 
 if __name__ == "__main__":
-    run()
+    try:
+        raise SystemExit(main())
+    except RuntimeError as exc:
+        print("[ERROR] {}".format(exc), file=sys.stderr)
+        raise SystemExit(2)

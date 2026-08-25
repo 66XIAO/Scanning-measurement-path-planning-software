@@ -40,6 +40,8 @@ class PoseTransformTests(unittest.TestCase):
         path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "calibration",
             "robodk_ur10_creaform_station.json"))
+        if not os.path.isfile(path):
+            self.skipTest("local RoboDK station calibration is not configured")
         config = load_extrinsic_config(path)
         self.assertEqual(config.mapping_mode, "robodk_tcp_is_scanner")
         self.assertEqual(config.robodk_tool_name, "Creaform MetraSCAN")

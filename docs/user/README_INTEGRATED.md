@@ -86,18 +86,31 @@ root:
 & '.\run_integrated_app.ps1'
 ```
 
-The launcher uses the existing `test` Conda Python 3.12 interpreter and loads
-OCC/PySide6 from the existing `Pythonocc` Conda environment. It does not install
-or modify packages and does not use Conda base.
+The launcher discovers Conda from `PATH`, uses `base` by default, and verifies
+NumPy, PythonOCC and PyQt5/PySide6 before opening the GUI. It does not install or
+modify packages. Select another complete existing environment when needed:
+
+```powershell
+$env:SCANNING_APP_CONDA_ENV='environment-name'
+& '.\run_integrated_app.ps1'
+```
+
+For persistent Conda or RoboDK paths, copy
+`config/local_environment.example.ps1` to `config/local_environment.ps1` and
+edit the ignored copy. Machine-specific paths will not appear in Git status.
+
+For a preflight check without opening the window:
+
+```powershell
+& '.\run_integrated_app.ps1' -CheckOnly
+```
 
 ## Tests
 
 Pure speed-planning tests can run in the existing Pytorch environment:
 
 ```powershell
-$prefix='D:\Env\conda\2024\envs\Pytorch'
-$env:PATH="$prefix;$prefix\Library\bin;$prefix\Scripts;$env:PATH"
-& "$prefix\python.exe" -m unittest discover -s tests -v
+conda run -n base python -m unittest discover -s tests -v
 ```
 
 ## Safety boundary

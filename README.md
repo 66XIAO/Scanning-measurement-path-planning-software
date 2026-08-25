@@ -120,15 +120,25 @@ or
 .\run_integrated_app.ps1
 ```
 
-The Python bootstrap can also be used when the required local environment is configured:
+Check the local environment without opening the UI:
 
 ```powershell
-python app_bootstrap.py
+.\start_software.cmd --check
 ```
 
 ### Current environment notes
 
-The checked-in `app_bootstrap.py` reflects the author's current development machine and contains default paths for the existing PythonOCC and RoboDK installations. These paths are **not portable defaults** and should be adapted to the local machine, preferably through the supported environment variables/configuration.
+The launcher discovers Conda from `PATH`, uses the `base` environment by default, and validates NumPy, PythonOCC, and PyQt5/PySide6 before opening the UI. To select another existing environment:
+
+```powershell
+$env:SCANNING_APP_CONDA_ENV = 'environment-name'
+.\start_software.cmd
+```
+
+The RoboDK Python API path is resolved from the ignored local configuration,
+`ROBODK_API_PATH`/`ROBODK_INSTALL_DIR`, PATH, the Windows registry, or standard
+operating-system installation directories. No machine-specific absolute path is
+stored in tracked source code.
 
 See:
 

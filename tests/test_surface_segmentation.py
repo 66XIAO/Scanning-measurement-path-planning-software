@@ -72,8 +72,12 @@ class SurfaceSegmentationTests(unittest.TestCase):
         self.assertTrue(patches)
         self.assertTrue(all(is_surface_patch(patch) for patch in patches))
         for patch in patches:
-            classifier = BRepClass_FaceClassifier(
-                patch.source_face, patch.center, 1e-6, True)
+            try:
+                classifier = BRepClass_FaceClassifier(
+                    patch.source_face, patch.center, 1e-6, True)
+            except TypeError:
+                classifier = BRepClass_FaceClassifier(
+                    patch.source_face, patch.center, 1e-6)
             self.assertIn(classifier.State(), (TopAbs_IN, TopAbs_ON))
             self.assertAlmostEqual(patch.normal.Magnitude(), 1.0, places=6)
             self.assertGreater(patch.area, 0.0)

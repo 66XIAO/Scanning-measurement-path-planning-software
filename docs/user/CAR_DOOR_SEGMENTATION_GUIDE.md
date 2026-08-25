@@ -111,8 +111,7 @@ V >= ceil(970 /  90) = 11
 无界面验证示例：
 
 ```powershell
-$env:PYTHONOCC_PREFIX='D:\Env\conda\2024\envs\Pythonocc'
-D:\Env\conda\2024\envs\test\python.exe `
+conda run -n '<包含 PythonOCC 的环境名称>' python `
   scripts\validate_car_door_segmentation.py `
   '<真实组件最终版.step的路径>' --u 9 --v 11 --summary-only `
   --json-output diagnostics\cardoor0808\scanner_grid_study\mesh_grid_u9_v11.json

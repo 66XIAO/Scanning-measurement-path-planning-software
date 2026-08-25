@@ -1,7 +1,7 @@
 """Headless regression for real IGES model loading and face segmentation.
 
-Run with the existing ``test`` Conda interpreter. The script reuses the
-existing Pythonocc environment and does not install packages.
+Run with a Conda interpreter that contains PythonOCC. An optional
+``PYTHONOCC_PREFIX`` can point to a compatible existing environment.
 """
 
 import argparse
@@ -11,15 +11,14 @@ import sys
 import time
 
 
-PYTHONOCC_PREFIX = os.environ.get(
-    "PYTHONOCC_PREFIX", r"D:\Env\conda\2024\envs\Pythonocc")
-SITE_PACKAGES = os.path.join(PYTHONOCC_PREFIX, "Lib", "site-packages")
-DLL_DIRECTORY = os.path.join(PYTHONOCC_PREFIX, "Library", "bin")
-
-if hasattr(os, "add_dll_directory"):
-    _dll_handle = os.add_dll_directory(DLL_DIRECTORY)
-if SITE_PACKAGES not in sys.path:
-    sys.path.insert(0, SITE_PACKAGES)
+PYTHONOCC_PREFIX = os.environ.get("PYTHONOCC_PREFIX", "").strip()
+if PYTHONOCC_PREFIX:
+    SITE_PACKAGES = os.path.join(PYTHONOCC_PREFIX, "Lib", "site-packages")
+    DLL_DIRECTORY = os.path.join(PYTHONOCC_PREFIX, "Library", "bin")
+    if hasattr(os, "add_dll_directory") and os.path.isdir(DLL_DIRECTORY):
+        _dll_handle = os.add_dll_directory(DLL_DIRECTORY)
+    if os.path.isdir(SITE_PACKAGES) and SITE_PACKAGES not in sys.path:
+        sys.path.insert(0, SITE_PACKAGES)
 
 from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.TopExp import TopExp_Explorer

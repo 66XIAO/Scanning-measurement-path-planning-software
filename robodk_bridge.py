@@ -16,6 +16,8 @@ import sys
 import uuid
 from typing import Callable, Dict, Iterable, Mapping, Optional
 
+from robodk_discovery import discover_robodk_api_path
+
 
 _LEGACY_API_CACHE = None
 
@@ -86,12 +88,7 @@ def _import_api():
     # Prefer the API shipped with the installed RoboDK application.  RoboDK
     # 4.0.0 expects legacy commands such as ``S_Frame_ptr``; a newer pip API
     # sends ``S_Link_ptr`` and the old server waits until the socket times out.
-    candidates = [
-        os.environ.get("ROBODK_API_PATH", ""),
-        r"D:\RoboDK\Python37\lib\site-packages",
-        r"C:\RoboDK\Python37\lib\site-packages",
-        r"C:\Program Files\RoboDK\Python37\lib\site-packages",
-    ]
+    candidates = [discover_robodk_api_path()]
     for path in candidates:
         if not path or not os.path.isdir(path):
             continue
