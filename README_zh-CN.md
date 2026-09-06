@@ -11,19 +11,19 @@
 ### 1. 表面采样与视点生成
 
 <p align="center">
-  <img src="docs/assets/readme/surface_sampling.webp" alt="表面采样与视点生成" width="600">
+  <img src="docs/assets/readme/surface_sampling.png" alt="表面采样与视点生成" width="600">
 </p>
 
 ### 2. 93 个分割面片下的路径规划结果
 
 <p align="center">
-  <img src="docs/assets/readme/path_planning_93_patches.webp" alt="93 个分割面片下的路径规划结果" width="600">
+  <img src="docs/assets/readme/path_planning_93_patches.png" alt="93 个分割面片下的路径规划结果" width="600">
 </p>
 
 ### 3. 47 个分割面片下的路径规划结果
 
 <p align="center">
-  <img src="docs/assets/readme/path_planning_47_patches.webp" alt="47 个分割面片下的路径规划结果" width="600">
+  <img src="docs/assets/readme/path_planning_47_patches.png" alt="47 个分割面片下的路径规划结果" width="600">
 </p>
 
 ## 主要功能

@@ -11,19 +11,19 @@ The following screenshots illustrate representative stages of the software workf
 ### 1. Surface sampling and viewpoint generation
 
 <p align="center">
-  <img src="docs/assets/readme/surface_sampling.webp" alt="Surface sampling and viewpoint generation" width="600">
+  <img src="docs/assets/readme/surface_sampling.png" alt="Surface sampling and viewpoint generation" width="600">
 </p>
 
 ### 2. Path planning result with 93 segmented patches
 
 <p align="center">
-  <img src="docs/assets/readme/path_planning_93_patches.webp" alt="Path planning result with 93 segmented patches" width="600">
+  <img src="docs/assets/readme/path_planning_93_patches.png" alt="Path planning result with 93 segmented patches" width="600">
 </p>
 
 ### 3. Path planning result with 47 segmented patches
 
 <p align="center">
-  <img src="docs/assets/readme/path_planning_47_patches.webp" alt="Path planning result with 47 segmented patches" width="600">
+  <img src="docs/assets/readme/path_planning_47_patches.png" alt="Path planning result with 47 segmented patches" width="600">
 </p>
 
 ## Main Capabilities
