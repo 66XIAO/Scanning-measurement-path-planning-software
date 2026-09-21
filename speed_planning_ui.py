@@ -46,12 +46,16 @@ def get_speed_planning_settings(parent=None):
 
     form = QtWidgets.QFormLayout()
     algorithm = QtWidgets.QComboBox()
+    algorithm.addItem(tr("dialog.speed.algorithm_continuous"), "continuous_yang")
     algorithm.addItem(tr("dialog.speed.algorithm_deterministic"), "deterministic")
     algorithm.addItem(tr("dialog.speed.algorithm_double_q"), "double_q")
     form.addRow(tr("dialog.speed.algorithm"), algorithm)
 
     widgets = {
-        "min_linear_speed": _double_spin(QtWidgets, 0.1, 5000, 20, suffix="mm/s"),
+        "position_tolerance_mm": _double_spin(QtWidgets, 0.01, 10, 1.5, decimals=3, suffix="mm"),
+        "orientation_tolerance_deg": _double_spin(QtWidgets, 0.01, 10, 2, decimals=3, suffix="deg"),
+        "rounding_mm": _double_spin(QtWidgets, 0.001, 5, .3, decimals=3, suffix="mm"),
+        "min_linear_speed": _double_spin(QtWidgets, 0.1, 5000, .1, suffix="mm/s"),
         "max_linear_speed": _double_spin(QtWidgets, 0.1, 5000, 250, suffix="mm/s"),
         "max_linear_accel": _double_spin(QtWidgets, 0.1, 50000, 500, suffix="mm/s^2"),
         "max_lateral_accel": _double_spin(QtWidgets, 0.1, 50000, 300, suffix="mm/s^2"),
@@ -59,13 +63,24 @@ def get_speed_planning_settings(parent=None):
         "max_angular_accel": _double_spin(QtWidgets, 0.1, 10000, 180, suffix="deg/s^2"),
         "command_joint_speed": _double_spin(QtWidgets, 0.1, 1000, 60, suffix="deg/s"),
         "command_joint_accel": _double_spin(QtWidgets, 0.1, 10000, 180, suffix="deg/s^2"),
-        "start_speed": _double_spin(QtWidgets, 0.1, 5000, 20, suffix="mm/s"),
-        "end_speed": _double_spin(QtWidgets, 0.1, 5000, 20, suffix="mm/s"),
+        "start_speed": _double_spin(QtWidgets, 0, 5000, 0, suffix="mm/s"),
+        "end_speed": _double_spin(QtWidgets, 0, 5000, 0, suffix="mm/s"),
         "safety_factor": _double_spin(QtWidgets, 0.1, 1.0, 0.90, decimals=3),
         "accel_margin_factor": _double_spin(QtWidgets, 1.0, 2.0, 1.10, decimals=3),
     }
     for key, widget in widgets.items():
         form.addRow(tr("dialog.speed." + key), widget)
+
+    def update_mode():
+        continuous = algorithm.currentData() == 'continuous_yang'
+        for key in ('start_speed', 'end_speed'):
+            widgets[key].setEnabled(not continuous)
+            if continuous:
+                widgets[key].setValue(0)
+        for key in ('position_tolerance_mm', 'orientation_tolerance_deg', 'rounding_mm'):
+            widgets[key].setEnabled(continuous)
+    algorithm.currentIndexChanged.connect(update_mode)
+    update_mode()
 
     speed_levels = QtWidgets.QSpinBox()
     speed_levels.setRange(3, 100)

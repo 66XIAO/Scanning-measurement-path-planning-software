@@ -1567,6 +1567,9 @@ def plan_path_speeds(event=None):
     if not settings:
         return
     algorithm = settings.pop("algorithm")
+    continuous_settings = {key: settings.pop(key) for key in
+                           ("position_tolerance_mm", "orientation_tolerance_deg", "rounding_mm")
+                           if key in settings}
     try:
         profile = ConstraintProfile(**settings)
         records, pose_metadata = _ordered_pose_records()
@@ -1578,8 +1581,17 @@ def plan_path_speeds(event=None):
         return
 
     def work():
-        result = plan_speed_profile(records, profile, algorithm)
+        if algorithm == "continuous_yang":
+            from continuous_scan import plan_continuous_scan
+            result = plan_continuous_scan(records, profile, **continuous_settings)
+        else:
+            result = plan_speed_profile(records, profile, algorithm)
         result.diagnostics.update(pose_metadata)
+        if algorithm == "continuous_yang":
+            result.diagnostics['original_source_pose_records'] = result.diagnostics.pop('source_pose_records', [])
+            if pose_metadata.get('extrinsic_validated', False):
+                from continuous_scan import constrain_with_robodk_joints
+                result = constrain_with_robodk_joints(result)
         if not pose_metadata["extrinsic_validated"]:
             result.warnings.append(tr(
                 "message.speed.extrinsic_missing_warning"))
@@ -1783,6 +1795,9 @@ def export_speed_plan_to_csv(event=None):
         count = write_speed_plan_csv(file_path, state.speed_plan_result)
         state.last_speed_csv_path = file_path
         message = tr("message.export.speed_complete", path=file_path)
+        if state.speed_plan_result.diagnostics.get('command_semantics') == 'incoming_segment':
+            message += '\n\n' + tr('message.export.command_csv',
+                                   path=os.path.splitext(file_path)[0]+'.commands.csv')
         _update_workflow(message)
         show_topmost_message(
             tr("common.success"), message)
@@ -1791,6 +1806,26 @@ def export_speed_plan_to_csv(event=None):
             tr("common.error"),
             tr("message.export.speed_failed", error=e),
             type="error")
+
+
+def export_continuous_urscript(event=None):
+    import copy
+    from datetime import datetime
+    from continuous_export import export_continuous_scan
+    result = state.speed_plan_result
+    program = state.last_robodk_import.get('program')
+    if result is None or not program or not result.diagnostics.get('incoming_commands'):
+        show_topmost_message(tr('common.prompt'), tr('message.speed.export_requires_import'))
+        return
+    directory = QtWidgets.QFileDialog.getExistingDirectory(get_main_window(), tr('action.export_continuous_urscript'))
+    if not directory:
+        return
+    diagnostics = copy.deepcopy(result.diagnostics)
+    output = os.path.join(directory, 'continuous_scan_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+    run_background_task(tr('action.export_continuous_urscript'), tr('message.speed.running'),
+        lambda: export_continuous_scan(program, diagnostics['incoming_commands'], output, diagnostics),
+        lambda report: show_topmost_message(tr('common.prompt'), report['script']),
+        lambda error: show_topmost_message(tr('common.error'), str(error), type='error'))
 
 
 def import_speed_plan_to_robodk(event=None):
@@ -2028,6 +2063,8 @@ def run():
                            "action.export_speed_plan_csv")
     _add_translated_action("Speed Planning", import_speed_plan_to_robodk,
                            "action.import_speed_plan_robodk")
+    _add_translated_action("Speed Planning", export_continuous_urscript,
+                           "action.export_continuous_urscript")
 
     # Calibration menu. Capture is read-only; saved station mappings still
     # require independent physical calibration before production execution.

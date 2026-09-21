@@ -79,6 +79,9 @@ def _load_legacy_api(site_packages):
         "transl": legacy_math.transl,
         "api_source": link_path,
     }
+    # Each protocol request sends several small packets before awaiting a reply.
+    # Disable Nagle buffering for local bulk target imports (no protocol change).
+    legacy_link.Robolink.NODELAY = True
     return _LEGACY_API_CACHE
 
 
@@ -172,6 +175,23 @@ def _item_inventory(rdk, item_type):
 
 def _find_exact_items(rdk, name, item_type, label):
     name = _required_name(name, label)
+    # Modern and bundled legacy APIs can fetch all names in one request. Avoid
+    # one Name RPC per station item on every lookup, while still rejecting
+    # duplicates and RoboDK's closest-name fallback.
+    item_list = getattr(rdk, 'ItemList', None)
+    if callable(item_list):
+        try:
+            names = item_list(item_type, True)
+        except TypeError:  # Minimal older shims/mocks expose ItemList(type) only.
+            names = None
+        if isinstance(names, list) and all(isinstance(value, str) for value in names):
+            count = names.count(name)
+            if count > 1:
+                raise RuntimeError('Duplicate RoboDK {} items have the exact name: {}'.format(label, name))
+            if count == 0:
+                return []
+            candidate = rdk.Item(name, item_type)
+            return [candidate] if _is_valid(candidate) and candidate.Name() == name else []
     inventory = _item_inventory(rdk, item_type)
     if inventory is not None:
         matches = [item for item in inventory if item.Name() == name]
@@ -1059,6 +1079,10 @@ def import_speed_plan(result, robot_name="UR10", frame_name="Frame 2",
                       target_namespace: Optional[str] = None, first_move="movej",
                       replace=False):
     """Create a RoboDK program and verify one speed instruction per pose."""
+    if result.diagnostics.get('command_semantics') == 'incoming_segment':
+        from continuous_scan import import_continuous_scan
+        return import_continuous_scan(result, robot_name, frame_name, tool_name,
+                                      program_name, target_namespace, first_move, replace)
     if not result.points:
         raise ValueError("Speed plan is empty")
     if not result.feasible:

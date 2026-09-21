@@ -15,3 +15,6 @@ calibration/*.json
 !calibration/*.example.json
 archive/qwen/
 diagnostics/
+
+# 速度规划 / 连续扫描实验产物（回放、捕获、对比、工作站备份等本地输出）
+artifacts/

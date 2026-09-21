@@ -1,0 +1,34 @@
+{
+  "source_repository": "D:\\Pycharm files\\Path Smoothing",
+  "source_commit": "44de804",
+  "changes": [
+    "Package imports made relative; CLI root injection removed. Numerical formulas unchanged.",
+    "full_pipeline accepts explicitly unwrapped continuous_angles; default source behavior preserved. Adapter shared orientation basis is an engineering adaptation, not an unchanged paper reproduction."
+  ],
+  "files": {
+    "bspline.py": {
+      "source_sha256": "7d7953fe886f37ee71358159d8c259f0162843db3f430ec7320d0027c00b9085",
+      "integrated_sha256": "e81be2760ca46c254992819d85433d48a476792a3508f36c18fed7c271429d29"
+    },
+    "orientation_decompose.py": {
+      "source_sha256": "36ffd172f69a8151f19c61ca29834fa03651663425bb962f1bd6fddeb2900f51",
+      "integrated_sha256": "c272e62e6211145b8bdae552821d832d2fd7148d8fb3db162b6ec7a0869b133b"
+    },
+    "length_solver.py": {
+      "source_sha256": "4d38753e69bf496c0bc1c56abf4a811699f48683ed4c3a14e306a114ee376836",
+      "integrated_sha256": "5bb77ad1f113f231d6ee033bbfc60f72c9d9d88052a18733c6e3a8552256a62b"
+    },
+    "corner_spline.py": {
+      "source_sha256": "3a08ac9c66bd625ab4d31b6580b55e44ef29f23a4cfabe778ead5bc82e21b782",
+      "integrated_sha256": "f1c5c791b02da563baaec11af0630696d0fadda076aff50d8bb99d60ddb4f96e"
+    },
+    "synchronization_proto.py": {
+      "source_sha256": "a885e407532bb37882a514b104e53ba05cffe112283fab4c281d557029599f4a",
+      "integrated_sha256": "b2bd6f69e94b9ac5487b827ae290de44f412da6303a726087b32dfc4c795343e"
+    },
+    "full_pipeline.py": {
+      "source_sha256": "8c2e8d7af9d84811476dcd7f01c05df0862f1cd6bd848504f86278debcf4bcab",
+      "integrated_sha256": "aefaeff7a88e737be3665b1ad790797055a1d6c32af02297d0aa4156c0de89fc"
+    }
+  }
+}

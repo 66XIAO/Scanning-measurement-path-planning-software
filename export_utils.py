@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 
 from speed_planning_core import result_rows
 
@@ -63,6 +64,7 @@ def write_speed_plan_csv(file_path, result):
     rows = result_rows(result)
     diagnostics = result.diagnostics or {}
     source_records = diagnostics.get("source_pose_records") or []
+    continuous = diagnostics.get('command_semantics') == 'incoming_segment'
     with open(file_path, "w", encoding="utf-8-sig", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(SPEED_CSV_HEADER)
@@ -71,6 +73,8 @@ def write_speed_plan_csv(file_path, result):
                 "x": row["x"], "y": row["y"], "z": row["z"],
                 "qw": row["qw"], "qx": row["qx"], "qy": row["qy"], "qz": row["qz"],
             }
+            if continuous and len(source_records) != len(rows):
+                source = {key: '' for key in ('x','y','z','qw','qx','qy','qz')}
             writer.writerow([
                 row["index"], row["x"], row["y"], row["z"],
                 row["qw"], row["qx"], row["qy"], row["qz"],
@@ -97,6 +101,19 @@ def write_speed_plan_csv(file_path, result):
         "diagnostics": {key: value for key, value in diagnostics.items()
                         if key != "source_pose_records"},
     }
+    if continuous:
+        command_path = os.path.splitext(file_path)[0] + '.commands.csv'
+        with open(command_path, 'w', encoding='utf-8-sig', newline='') as stream:
+            writer=csv.writer(stream)
+            writer.writerow(['index','X','Y','Z','w','x','y','z','linear_speed','linear_accel',
+                             'joint_speed','joint_accel','rounding_mm','incoming_segment','command_semantics'])
+            for command in diagnostics['incoming_commands']:
+                writer.writerow([command[k] for k in ('index','x','y','z','qw','qx','qy','qz',
+                                'linear_speed','linear_accel','joint_speed','joint_accel','rounding_mm','incoming_segment')]
+                                + ['incoming_segment'])
+        metadata.update(schema_version='2.0',reference_semantics='node states and outgoing segment times',
+                        command_semantics='incoming_segment',command_csv=os.path.basename(command_path),
+                        source_row_alignment='available' if len(source_records)==len(rows) else 'not_available')
     with open(file_path + ".metadata.json", "w", encoding="utf-8") as stream:
         json.dump(metadata, stream, ensure_ascii=False, indent=2)
     return len(rows)

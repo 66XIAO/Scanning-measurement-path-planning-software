@@ -52,8 +52,6 @@ class ConstraintProfile:
             "max_angular_accel",
             "command_joint_speed",
             "command_joint_accel",
-            "start_speed",
-            "end_speed",
         )
         for name in finite_positive:
             if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
@@ -64,9 +62,9 @@ class ConstraintProfile:
             raise ValueError("safety_factor must be in (0, 1]")
         if not math.isfinite(self.accel_margin_factor) or not 1 <= self.accel_margin_factor <= 2:
             raise ValueError("accel_margin_factor must be in [1, 2]")
-        if not self.min_linear_speed <= self.start_speed <= self.max_linear_speed:
+        if not math.isfinite(self.start_speed) or not 0 <= self.start_speed <= self.max_linear_speed:
             raise ValueError("start_speed must be within linear speed limits")
-        if not self.min_linear_speed <= self.end_speed <= self.max_linear_speed:
+        if not math.isfinite(self.end_speed) or not 0 <= self.end_speed <= self.max_linear_speed:
             raise ValueError("end_speed must be within linear speed limits")
         if not isinstance(self.speed_levels, int) or self.speed_levels < 3:
             raise ValueError("speed_levels must be at least 3")
@@ -235,7 +233,7 @@ def _forward_backward(caps, ds, profile):
     for i in range(len(ds) - 1, -1, -1):
         reachable = math.sqrt(max(0.0, speeds[i + 1] ** 2 + 2.0 * profile.max_linear_accel * ds[i]))
         speeds[i] = min(speeds[i], reachable)
-    return np.maximum(speeds, EPS)
+    return np.maximum(speeds, 0.0)
 
 
 def _segment_dynamics(speeds, ds, orientation_delta):
@@ -358,7 +356,7 @@ def _build_result(algorithm, samples, ds, path_s, curvature, orientation_delta,
     feasible = True
     for i, sample in enumerate(samples):
         violations = []
-        if speeds[i] < profile.min_linear_speed - 1e-6:
+        if 0 < i < n - 1 and speeds[i] < profile.min_linear_speed - 1e-6:
             violations.append("MIN_SPEED_CONFLICT")
         if speeds[i] > caps[i] + 1e-6:
             violations.append("SPEED_CAP")
