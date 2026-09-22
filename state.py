@@ -33,6 +33,10 @@ class AppState:
     surface_patches: list = field(default_factory=list)
     last_segmentation_diagnostics: dict = field(default_factory=dict)
     selected_face: object = None
+    # Keep the pythonOCC AIS wrapper alive while it remains in the interactive
+    # context. OCCT 7.4 can access-violate in EraseAll if only the C++ context
+    # retains a highlight created from a short-lived Python local.
+    selected_face_highlight: object = None
     original_face_normal: object = None
 
     # Geometry
@@ -113,6 +117,7 @@ class AppState:
         self.surface_patches.clear()
         self.last_segmentation_diagnostics.clear()
         self.selected_face = None
+        self.selected_face_highlight = None
         self.original_face_normal = None
         self.face_centers.clear()
         self.face_normals.clear()

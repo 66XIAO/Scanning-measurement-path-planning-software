@@ -13,6 +13,7 @@ import hashlib
 import traceback
 
 import numpy as np
+import OCC
 
 from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
@@ -42,7 +43,13 @@ from planning import (
     solve_greedy_open_path, run_abc_solver, run_mscga_solver,
     solve_sequential_open_path,
 )
-from renderer import render_scene as _render_scene, draw_path_edges, LayerVisibility
+from renderer import (
+    LayerVisibility,
+    clear_interactive_selection,
+    draw_path_edges,
+    erase_all_safely,
+    render_scene as _render_scene,
+)
 from ui_panels import (
     show_topmost_message, get_main_window, set_status_message,
     create_workflow_panel, create_layer_panel, update_workflow_status as _update_ws,
@@ -50,7 +57,7 @@ from ui_panels import (
     get_sensor_parameters_dialog, show_usage_instructions, build_workflow_snapshot,
     format_workflow_snapshot, retranslate_panels,
 )
-from workers import TaskRunner
+from workers import TaskRunner, supports_background_occ_objects
 from export_utils import write_path_pose_csv, write_speed_plan_csv
 from speed_planning_core import ConstraintProfile, plan_speed_profile
 from speed_planning_ui import (
@@ -122,6 +129,9 @@ normal_line_objects = []
 
 # Background-task infrastructure
 task_runner = TaskRunner(QtCore, QtWidgets, get_main_window)
+PYTHONOCC_VERSION = getattr(OCC, "VERSION", "unknown")
+OCC_BACKGROUND_OBJECTS_SUPPORTED = supports_background_occ_objects(
+    PYTHONOCC_VERSION)
 
 # Path-planning confirmation flag
 path_planning_prompt_confirmed = False
@@ -175,8 +185,26 @@ class MainWindowCloseEvent(QtCore.QObject):
 # 4. Rendering helper (bridges state → renderer.render_scene)
 # ---------------------------------------------------------------------------
 
+def _clear_selected_face_highlight(update=False):
+    """Remove the retained face highlight before a whole-scene erase."""
+    clear_interactive_selection(display)
+    highlight = state.selected_face_highlight
+    if highlight is None:
+        return
+    try:
+        display.Context.Remove(highlight, bool(update))
+    except Exception:
+        try:
+            display.Context.Erase(highlight, bool(update))
+        except Exception:
+            pass
+    finally:
+        state.selected_face_highlight = None
+
+
 def _do_render(fit_all=True):
     """Centralised scene redraw from current *state*."""
+    _clear_selected_face_highlight(update=False)
     vis = LayerVisibility(
         model=state.show_model,
         workpiece_coordinate_system=state.show_workpiece_coordinate_system,
@@ -298,6 +326,42 @@ def run_background_task(title, message, fn, on_success, on_error=None):
         else:
             show_topmost_message(tr("common.error"), error_text, type="error")
     return task_runner.run(title, message, fn, on_success, failure)
+
+
+def run_occ_native_task(title, message, fn, on_success, on_error=None):
+    """Run an OCC object-producing task on a version-compatible thread."""
+    if OCC_BACKGROUND_OBJECTS_SUPPORTED:
+        return run_background_task(
+            title, message, fn, on_success, on_error)
+
+    # pythonOCC/OCCT 7.4 can complete the calculation in a QThread but crash
+    # natively when the returned TopoDS objects are rendered on the GUI thread.
+    # Keep object construction and consumption on the main thread for this
+    # legacy runtime. Pure-Python solvers continue to use TaskRunner.
+    print("pythonOCC {} compatibility: running '{}' on the main thread".format(
+        PYTHONOCC_VERSION, title))
+    parent = get_main_window()
+    progress = QtWidgets.QProgressDialog(message, None, 0, 0, parent)
+    progress.setWindowTitle(title)
+    progress.setWindowModality(QtCore.Qt.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+    progress.show()
+    QtWidgets.QApplication.processEvents()
+    try:
+        result = fn()
+    except Exception as exc:
+        error_text = "{}\n{}".format(str(exc), traceback.format_exc())
+        if on_error:
+            on_error(error_text)
+        else:
+            show_topmost_message(tr("common.error"), error_text, type="error")
+        return None
+    finally:
+        progress.close()
+    on_success(result)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +516,8 @@ def import_model_from_path(file_path):
         new_shape, axis_size = import_result
         # Commit atomically only after parsing succeeds. Cancelling or a read
         # error leaves the previously loaded model and downstream state intact.
-        display.EraseAll()
+        _clear_selected_face_highlight(update=False)
+        erase_all_safely(display)
         state.reset_all()
         state.current_shape = new_shape
         state.workpiece_coordinate_system_size = axis_size
@@ -472,7 +537,7 @@ def import_model_from_path(file_path):
 
     set_status_message(tr(
         "message.import.loading", filename=os.path.basename(file_path)))
-    run_background_task(tr("file.import_model.title"), tr("message.import.reading"),
+    run_occ_native_task(tr("file.import_model.title"), tr("message.import.reading"),
                         load_shape, on_success, on_error)
 
 
@@ -485,6 +550,7 @@ def clear_model(event=None):
         return
 
     try:
+        _clear_selected_face_highlight(update=False)
         for cs in state.coordinate_systems:
             try:
                 display.Context.Erase(cs, True)
@@ -507,7 +573,7 @@ def clear_model(event=None):
                 except Exception:
                     pass
 
-        display.EraseAll()
+        erase_all_safely(display)
         display.Context.UpdateCurrentViewer()
         display.Repaint()
 
@@ -545,6 +611,10 @@ def select_single_face(event=None):
         return
     try:
         print("Please click a face in the 3D view to select...")
+        try:
+            display.unregister_callback(select_face_clicked)
+        except (AssertionError, ValueError):
+            pass
         display.SetSelectionModeFace()
         display.register_select_callback(select_face_clicked)
     except Exception as e:
@@ -564,10 +634,19 @@ def select_face_clicked(shapes, x, y):
             state.original_face_normal.Y(),
             state.original_face_normal.Z()))
 
+        # The callback runs while OCCViewer still owns the Select() result.
+        # Release that selected/detected AIS owner before any later EraseAll.
+        try:
+            display.unregister_callback(select_face_clicked)
+        except (AssertionError, ValueError):
+            pass
+        _clear_selected_face_highlight(update=False)
+
         from OCC.Core.AIS import AIS_Shape
         from OCC.Core.Quantity import Quantity_Color, Quantity_NOC_RED
         ais_shape = AIS_Shape(state.selected_face)
         ais_shape.SetColor(Quantity_Color(Quantity_NOC_RED))
+        state.selected_face_highlight = ais_shape
         display.Context.Display(ais_shape, True)
         display.Context.UpdateCurrent()
         display.SetSelectionModeNeutral()
@@ -646,7 +725,7 @@ def segment_faces(event=None):
                 type="error")
 
         set_status_message(tr("message.segmentation.running"))
-        run_background_task(tr("action.segment_faces"), tr("message.segmentation.task"),
+        run_occ_native_task(tr("action.segment_faces"), tr("message.segmentation.task"),
                             lambda: segment_model(shape_to_segment, u, v,
                                                   return_diagnostics=True,
                                                   strategy="auto"),

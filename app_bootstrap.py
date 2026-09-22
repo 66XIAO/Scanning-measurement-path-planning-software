@@ -31,11 +31,15 @@ def preflight():
     """Return an environment summary or raise for a missing requirement."""
     versions = {"python": sys.version.split()[0], "executable": sys.executable}
     failures = []
-    for module_name in ("numpy", "OCC.Core.gp", "OCC.Display.OCCViewer"):
+    for module_name in (
+            "numpy", "OCC", "OCC.Core.gp", "OCC.Extend.DataExchange",
+            "OCC.Display.OCCViewer"):
         try:
             module = importlib.import_module(module_name)
             root_name = module_name.split(".")[0]
-            versions.setdefault(root_name, getattr(module, "__version__", "available"))
+            module_version = getattr(
+                module, "VERSION", getattr(module, "__version__", "available"))
+            versions.setdefault(root_name, module_version)
         except Exception as exc:
             failures.append("{}: {}".format(module_name, exc))
 
@@ -76,9 +80,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true",
                         help="validate the selected environment without opening the GUI")
+    parser.add_argument("--skip-check", action="store_true",
+                        help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    summary = preflight()
-    _print_summary(summary)
+    if args.check and args.skip_check:
+        parser.error("--check and --skip-check cannot be used together")
+    if not args.skip_check:
+        summary = preflight()
+        _print_summary(summary)
     if args.check:
         return 0
 

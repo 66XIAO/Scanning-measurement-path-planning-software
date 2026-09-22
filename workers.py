@@ -1,3 +1,23 @@
+import re
+
+
+def pythonocc_version_tuple(version):
+    """Extract a comparable three-part version from pythonOCC version text."""
+    numbers = [int(value) for value in re.findall(r"\d+", str(version))[:3]]
+    return tuple((numbers + [0, 0, 0])[:3])
+
+
+def supports_background_occ_objects(version):
+    """Return whether this runtime is known-safe for OCC object worker transfer.
+
+    The integrated worker workflow was validated with pythonOCC/OCCT 7.9.3.
+    Older local 7.4 builds crash in TKV3d/TKXSBase when B-Rep objects created
+    by a QThread are later consumed by the GUI thread, so they must use the
+    synchronous compatibility path.
+    """
+    return pythonocc_version_tuple(version) >= (7, 9, 0)
+
+
 def create_background_worker_class(QtCore):
     Signal = getattr(QtCore, "pyqtSignal", getattr(QtCore, "Signal", None))
     if Signal is None:

@@ -31,6 +31,12 @@ from surface_segmentation import (
 )
 
 
+# Boolean splits on imported STEP geometry inherit the source model's edge and
+# vertex tolerances.  Requiring one-part-per-million area agreement rejects
+# valid splits on ordinary millimetre-scale faces (for example 500X250.STEP).
+ISO_SPLIT_AREA_TOLERANCE = 1e-3
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -373,6 +379,12 @@ def _surface_area(shape):
     return float(props.Mass())
 
 
+def _split_areas_conserve(input_area, output_area):
+    """Return whether one boolean split conserves area within B-Rep noise."""
+    relative_error = abs(output_area - input_area) / max(input_area, 1e-12)
+    return relative_error <= ISO_SPLIT_AREA_TOLERANCE
+
+
 def segment_model(shape, u=6, v=4, return_diagnostics=False, area_tolerance=0.01,
                   strategy="equal_param", mesh_linear_deflection=None,
                   mesh_angular_deflection=0.5):
@@ -564,8 +576,7 @@ def _split_face_iso(sas, face, param, axis="u", diagnostics=None):
         if len(faces) >= 2:
             input_area = _surface_area(face)
             output_area = sum(_surface_area(result_face) for result_face in faces)
-            relative_error = abs(output_area - input_area) / max(input_area, 1e-12)
-            if relative_error > 1e-6:
+            if not _split_areas_conserve(input_area, output_area):
                 if diagnostics is not None:
                     diagnostics.area_rejected_splits += 1
                 return [face]
