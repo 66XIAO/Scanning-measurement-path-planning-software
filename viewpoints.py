@@ -83,7 +83,7 @@ def _pose_x_axis(z_vec):
 # ---------------------------------------------------------------------------
 
 def build_center_viewpoints(display, faces, centers, normals,
-                            distance=VIEWPOINT_DISTANCE):
+                            distance=VIEWPOINT_DISTANCE, render=True):
     """Generate one center viewpoint per face.
 
     Parameters
@@ -114,18 +114,18 @@ def build_center_viewpoints(display, faces, centers, normals,
         pose = calculate_viewpoint_pose(vp, normal, center)
         center_vps_with_pose.append((vp, pose))
 
-        # display blue dot
-        display.DisplayShape(vp, color=rgb_color(0, 0, 1), update=False)
-
-        # display line centre -> viewpoint
-        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-        edge = BRepBuilderAPI_MakeEdge(center, vp)
-        line_obj = display.DisplayShape(edge.Edge(), color=rgb_color(0.5, 0.5, 1.0), update=False)
-        if line_obj:
-            normal_line_objects.append(line_obj)
-
-        # display trihedron
-        display_coordinate_system(display, vp, normal, size=50, center=center)
+        if render:
+            # Compatibility mode for non-orchestrated callers. The main GUI
+            # passes render=False and performs one unified state render.
+            display.DisplayShape(vp, color=rgb_color(0, 0, 1), update=False)
+            from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+            edge = BRepBuilderAPI_MakeEdge(center, vp)
+            line_obj = display.DisplayShape(
+                edge.Edge(), color=rgb_color(0.5, 0.5, 1.0), update=False)
+            if line_obj:
+                normal_line_objects.append(line_obj)
+            display_coordinate_system(
+                display, vp, normal, size=50, center=center)
 
     return center_vps, center_vps_with_pose, normal_line_objects
 
@@ -137,7 +137,8 @@ def build_center_viewpoints(display, faces, centers, normals,
 def build_candidate_viewpoints(display, faces, centers, normals,
                                distance=VIEWPOINT_DISTANCE,
                                num_candidates=NUM_CANDIDATES_PER_FACE,
-                               zenith_deg=ZENITH_ANGLE_DEG):
+                               zenith_deg=ZENITH_ANGLE_DEG,
+                               render=True):
     """Generate center + *num_candidates* tilted viewpoints per face.
 
     Returns
@@ -167,17 +168,20 @@ def build_candidate_viewpoints(display, faces, centers, normals,
         cp = calculate_viewpoint_pose(cv, main_normal, center)
         center_poses.append(cp)
 
-        display.DisplayShape(cv, color=rgb_color(0, 0, 1), update=False)
-        tri = display_coordinate_system(display, cv, main_normal, size=8.0, center=center)
-        if tri:
-            coord_systems.append(tri)
+        if render:
+            display.DisplayShape(cv, color=rgb_color(0, 0, 1), update=False)
+            tri = display_coordinate_system(
+                display, cv, main_normal, size=8.0, center=center)
+            if tri:
+                coord_systems.append(tri)
 
-        # --- normal line (centre -> centre viewpoint) ---
-        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-        edge = BRepBuilderAPI_MakeEdge(center, cv)
-        lo = display.DisplayShape(edge.Edge(), color=rgb_color(0.5, 0.5, 1.0), update=False)
-        if lo:
-            normal_line_objects.append(lo)
+            # --- normal line (centre -> centre viewpoint) ---
+            from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+            edge = BRepBuilderAPI_MakeEdge(center, cv)
+            lo = display.DisplayShape(
+                edge.Edge(), color=rgb_color(0.5, 0.5, 1.0), update=False)
+            if lo:
+                normal_line_objects.append(lo)
 
         # --- tilted candidates ---
         x_vec = _perpendicular_vector(main_normal)
@@ -207,10 +211,13 @@ def build_candidate_viewpoints(display, faces, centers, normals,
                 cp2 = calculate_viewpoint_pose(cand, rot_normal, center)
                 non_center_poses.append(cp2)
 
-                display.DisplayShape(cand, color=rgb_color(0, 0.5, 0.5), update=False)
-                tri2 = display_coordinate_system(display, cand, rot_normal, size=6.0, center=center)
-                if tri2:
-                    coord_systems.append(tri2)
+                if render:
+                    display.DisplayShape(
+                        cand, color=rgb_color(0, 0.5, 0.5), update=False)
+                    tri2 = display_coordinate_system(
+                        display, cand, rot_normal, size=6.0, center=center)
+                    if tri2:
+                        coord_systems.append(tri2)
             except Exception as e:
                 print("Error generating candidate viewpoint: {}".format(str(e)))
 

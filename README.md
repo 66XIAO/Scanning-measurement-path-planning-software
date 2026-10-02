@@ -4,6 +4,17 @@
 
 A research-oriented desktop application for **CAD-based robotic scanning and measurement path planning**. The project integrates 3D model processing, surface segmentation, viewpoint generation, open-path optimization, speed planning, pose transformation, and RoboDK-based UR10 reachability analysis into a unified workflow.
 
+## Portable workstations
+
+Use **File > Save Workstation** (`Ctrl+S`) to save the current model, completed
+processing results, parameters, collision/path/speed data, calibration,
+visibility/camera state, and operation history to one `.swstation` file. Use
+`Ctrl+O` to reopen it and continue without rerunning completed algorithms. The
+archive can be moved and opened without the source STEP/IGES file. See
+[the workstation format and compatibility notes](docs/architecture/WORKSTATION_FORMAT.md).
+Workstation files can also be dragged directly onto the 3D viewer; the drop
+handler accepts `.swstation`, `.step`, `.stp`, `.iges`, and `.igs`.
+
 ## Software Demonstration
 
 The following screenshots illustrate representative stages of the software workflow, including surface sampling/viewpoint generation and path-planning results under different segmentation settings.

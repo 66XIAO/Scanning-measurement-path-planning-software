@@ -226,7 +226,8 @@ def display_workpiece_coordinate_system(display, shape=None, size=None):
         print("Error creating workpiece coordinate system: {}".format(str(e)))
         return None
 
-def display_coordinate_system(display, position, normal, size=50.0, center=None):
+def display_coordinate_system(display, position, normal, size=50.0, center=None,
+                              update=True):
     """Display a small trihedron at *position* and return its AIS handle.
 
     Parameters
@@ -250,7 +251,7 @@ def display_coordinate_system(display, position, normal, size=50.0, center=None)
 
         ctx = display.Context
         ctx.SetAutoActivateSelection(False)
-        ctx.Display(trihedron, True)
+        ctx.Display(trihedron, bool(update))
         return trihedron
     except Exception as e:
         print("Error creating coordinate system: {}".format(str(e)))

@@ -140,6 +140,15 @@ class ModelDropTests(unittest.TestCase):
                 os.path.normcase(resolution.import_path),
                 os.path.normcase(str(model)))
 
+    def test_swstation_is_a_supported_single_file_drop(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workstation = Path(temp_dir, "test.swstation")
+            workstation.touch()
+            resolution = resolve_model_drop([workstation])
+            self.assertTrue(resolution.is_importable)
+            self.assertEqual(Path(resolution.import_path).name, "test.swstation")
+            self.assertIn("Release to open", format_drop_feedback(resolution))
+
     def test_non_local_uri_is_rejected(self):
         resolution = resolve_model_drop(["https://example.com/model.step"])
         self.assertFalse(resolution.is_importable)
@@ -236,18 +245,18 @@ class ModelDropTests(unittest.TestCase):
 
             event_filter.eventFilter(
                 viewer, FakeDropEvent(FakeQEvent.DragEnter, mime))
-            self.assertEqual(statuses[-1], "Release to import model: part.step")
+            self.assertEqual(statuses[-1], "Release to open: part.step")
 
             manager.set_language("zh")
             # The filter and cached resolution are reused; only the active
             # translation changes at event-render time.
             event_filter.eventFilter(
                 viewer, FakeDropEvent(FakeQEvent.DragMove, mime))
-            self.assertEqual(statuses[-1], "释放鼠标以导入模型：part.step")
+            self.assertEqual(statuses[-1], "释放鼠标以打开：part.step")
 
             event_filter.eventFilter(
                 viewer, FakeDropEvent(FakeQEvent.Drop, mime))
-            self.assertEqual(statuses[-1], "正在加载拖入的模型：part.step")
+            self.assertEqual(statuses[-1], "正在打开拖入的文件：part.step")
             self.assertEqual(imported, [str(model)])
 
         self.assertTrue(viewer.accept_drops)
@@ -314,7 +323,7 @@ class ModelDropTests(unittest.TestCase):
         self.assertEqual(
             format_drop_feedback(
                 resolution, translate=lambda _key, **_values: _key),
-            "Release to import model: part.step")
+            "Release to open: part.step")
 
 
 if __name__ == "__main__":
