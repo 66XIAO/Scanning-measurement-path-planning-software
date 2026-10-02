@@ -9,6 +9,25 @@
 ![软件工作流程演示](./docs/assets/software_demo.gif)
 
 > 上述 GIF 为根据项目提供的完整软件录屏生成的 README 展示版，在保留完整流程时长的基础上进行了尺寸与帧率优化，以降低仓库页面加载开销。
+以下三张截图展示软件工作流中的代表性阶段，包括表面采样/视点生成，以及不同分割参数下的路径规划结果。
+
+### 1. 表面采样与视点生成
+
+<p align="center">
+  <img src="docs/assets/readme/surface_sampling.png" alt="表面采样与视点生成" width="600">
+</p>
+
+### 2. 93 个分割面片下的路径规划结果
+
+<p align="center">
+  <img src="docs/assets/readme/path_planning_93_patches.png" alt="93 个分割面片下的路径规划结果" width="600">
+</p>
+
+### 3. 47 个分割面片下的路径规划结果
+
+<p align="center">
+  <img src="docs/assets/readme/path_planning_47_patches.png" alt="47 个分割面片下的路径规划结果" width="600">
+</p>
 
 ## 主要功能
 
@@ -124,6 +143,10 @@ UR10 可达性检查
 
 ```powershell
 .\start_software.cmd --check
+当本地 PythonOCC/RoboDK 环境已经正确配置时，也可使用：
+
+```powershell
+python app_bootstrap.py
 ```
 
 ### 当前环境说明
@@ -136,6 +159,7 @@ $env:SCANNING_APP_CONDA_ENV = '环境名称'
 ```
 
 RoboDK Python API 路径依次从 Git 忽略的本机配置、`ROBODK_API_PATH` / `ROBODK_INSTALL_DIR`、PATH、Windows 注册表或操作系统标准安装目录中发现；跟踪代码中不保存本机绝对路径。RoboDK 为可选集成，不影响软件的环境预检。
+仓库中的 `app_bootstrap.py` 反映了作者当前开发机的环境复用方案，其中包含 PythonOCC 与 RoboDK 的默认本机路径。这些路径**不是可直接迁移到其他计算机的通用配置**；在其他环境部署时，应根据本机安装位置进行调整，并优先使用项目支持的环境变量/配置方式。
 
 相关说明：
 
