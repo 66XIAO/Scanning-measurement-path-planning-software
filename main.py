@@ -42,7 +42,9 @@ from planning import (
     solve_greedy_open_path, run_abc_solver, run_mscga_solver,
     solve_sequential_open_path,
 )
-from renderer import render_scene as _render_scene, draw_path_edges, LayerVisibility
+from renderer import (render_scene as _render_scene, draw_path_edges,
+                      LayerVisibility, erase_scene_safely,
+                      clear_interactive_selection)
 from ui_panels import (
     show_topmost_message, get_main_window, set_status_message,
     create_workflow_panel, create_layer_panel, update_workflow_status as _update_ws,
@@ -77,7 +79,9 @@ from model_drop import install_model_drop_support
 from surface_segmentation import is_surface_patch
 from ui_theme import (
     apply_application_theme, create_primary_toolbar, decorate_action,
+    retranslate_ribbon, ribbon_page, set_ribbon_size,
 )
+from scene_style import CENTER, OPTIMAL, ERROR, configure_viewer
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +147,8 @@ _closing_dialog_active = False
 _translated_menus = {}
 _translated_actions = []
 _language_subscription = None
+_face_callback_registered = False
+_awaiting_face_selection = False
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +209,7 @@ def _do_render(fit_all=True):
         state.optimal_path_objects,
         state.sensor_volume_objects, state.obb_visualizations,
         fit_all=fit_all,
+        selected_face=state.selected_face,
     )
 
 
@@ -262,6 +269,7 @@ def _retranslate_main_ui(_locale=None):
         translation_key = action.property("i18n_key")
         if translation_key:
             action.setText(tr(str(translation_key)))
+    retranslate_ribbon()
     retranslate_panels(state)
 
 
@@ -452,12 +460,13 @@ def import_model_from_path(file_path):
         return shape, axis_size
 
     def on_success(import_result):
-        global path_planning_prompt_confirmed
+        global path_planning_prompt_confirmed, _awaiting_face_selection
         new_shape, axis_size = import_result
         # Commit atomically only after parsing succeeds. Cancelling or a read
         # error leaves the previously loaded model and downstream state intact.
-        display.EraseAll()
+        erase_scene_safely(display)
         state.reset_all()
+        _awaiting_face_selection = False
         state.current_shape = new_shape
         state.workpiece_coordinate_system_size = axis_size
         path_planning_prompt_confirmed = False
@@ -481,7 +490,7 @@ def import_model_from_path(file_path):
 
 
 def clear_model(event=None):
-    global path_planning_prompt_confirmed
+    global path_planning_prompt_confirmed, _awaiting_face_selection
     result = show_topmost_message(
         tr("message.confirm_clear.title"),
         tr("message.confirm_clear.body"), type="question")
@@ -489,6 +498,7 @@ def clear_model(event=None):
         return
 
     try:
+        clear_interactive_selection(display)
         for cs in state.coordinate_systems:
             try:
                 display.Context.Erase(cs, True)
@@ -511,11 +521,12 @@ def clear_model(event=None):
                 except Exception:
                     pass
 
-        display.EraseAll()
+        erase_scene_safely(display)
         display.Context.UpdateCurrentViewer()
         display.Repaint()
 
         state.reset_all()
+        _awaiting_face_selection = False
         center_points_objects.clear()
         normal_line_objects.clear()
         path_planning_prompt_confirmed = False
@@ -544,23 +555,29 @@ def exit_program(event=None):
 # ---------------------------------------------------------------------------
 
 def select_single_face(event=None):
+    global _face_callback_registered, _awaiting_face_selection
     if not state.current_shape:
         show_topmost_message(tr("common.prompt"), tr("message.require.model"))
         return
     try:
         print("Please click a face in the 3D view to select...")
+        _awaiting_face_selection = True
         display.SetSelectionModeFace()
-        display.register_select_callback(select_face_clicked)
+        if not _face_callback_registered:
+            display.register_select_callback(select_face_clicked)
+            _face_callback_registered = True
     except Exception as e:
         print("Error selecting face: {}".format(str(e)))
         traceback.print_exc()
 
 
 def select_face_clicked(shapes, x, y):
-    if not shapes:
+    global _awaiting_face_selection
+    if not _awaiting_face_selection or not shapes:
         return
     shape = shapes[0]
     if shape.ShapeType() == TopAbs_FACE:
+        _awaiting_face_selection = False
         state.selected_face = shape
         state.original_face_normal = calculate_face_normal(state.selected_face)
         print("Face selected, normal: ({:.4f}, {:.4f}, {:.4f})".format(
@@ -568,14 +585,8 @@ def select_face_clicked(shapes, x, y):
             state.original_face_normal.Y(),
             state.original_face_normal.Z()))
 
-        from OCC.Core.AIS import AIS_Shape
-        from OCC.Core.Quantity import Quantity_Color, Quantity_NOC_RED
-        ais_shape = AIS_Shape(state.selected_face)
-        ais_shape.SetColor(Quantity_Color(Quantity_NOC_RED))
-        display.Context.Display(ais_shape, True)
-        display.Context.UpdateCurrent()
         display.SetSelectionModeNeutral()
-        display.Repaint()
+        _do_render(fit_all=False)
         _update_workflow(tr("message.face_selected"))
 
 
@@ -608,6 +619,8 @@ def segment_faces(event=None):
             state.current_faces = faces
             state.surface_patches = [face for face in faces if is_surface_patch(face)]
             state.invalidate_after_segmentation()
+            state.selected_face = None
+            state.original_face_normal = None
             state.last_segmentation_diagnostics = diagnostics
             _do_render()
             strategy = diagnostics.get("strategy", "equal_param")
@@ -697,7 +710,7 @@ def get_centers(event=None):
                 state.face_centers.append(center)
                 state.face_normals.append(normal)
 
-                obj = display.DisplayShape(center, color=rgb_color(1, 0, 0), update=False)
+                obj = display.DisplayShape(center, color=CENTER, update=False)
                 if obj:
                     center_points_objects.append(obj)
                 tri = display_coordinate_system(display, center, normal, size=50.0)
@@ -870,10 +883,10 @@ def filter_optimal_viewpoints(event=None):
             state.optimal_viewpoints_with_pose.append((best_vp, best_pose))
             state.optimal_viewpoint_records.append(best_record)
 
-        # Display optimal viewpoints (red spheres)
+        # Display optimal viewpoints in the scene's shared green.
         for vp in state.optimal_viewpoints:
             sphere = BRepPrimAPI_MakeSphere(vp, 5.0).Shape()
-            display.DisplayShape(sphere, color=rgb_color(1, 0, 0), update=False)
+            display.DisplayShape(sphere, color=OPTIMAL, update=False)
 
         display.FitAll()
         print("Optimal viewpoints filtered: {}".format(len(state.optimal_viewpoints)))
@@ -1072,7 +1085,7 @@ def demo_collision_detection(event=None):
         obb_center = first_obb.Center()
         test_center = gp_Pnt(obb_center.X() + 10, obb_center.Y() + 10, obb_center.Z() + 10)
         test_cube = BRepPrimAPI_MakeBox(test_center, 200, 200, 200).Shape()
-        display.DisplayShape(test_cube, color=rgb_color(1, 0, 0), update=False)
+        display.DisplayShape(test_cube, color=ERROR, update=False)
         display.Repaint()
 
         collision = any(
@@ -1935,16 +1948,11 @@ Usage Instructions:
   2. Please use functions in order:
      Import Model -> Segment Faces -> Get Centers -> Generate Viewpoints
      -> Filter Optimal Viewpoints -> Path Planning
-  3. Click 'File' menu to import/clear models or exit
-  4. Click 'Model Processing' menu for segmentation and viewpoint workflow
-  5. Click 'Collision Detection' menu for sensor and OBB operations
-  6. Click 'View' menu to show/hide layers
-  7. Click 'Path Planning' menu for sequential/greedy/ABC/MSCGA planning
-  8. Load a validated T_tool_scanner from 'Calibration' before production import
-  9. Check UR10 reachability using the current RoboDK robot model
- 10. After path ordering, use 'Speed Planning' to plan constrained per-pose speeds
- 11. Export Pose+Speed CSV or import Set Speed -> Move pairs to RoboDK
- 12. Click 'Help' menu to show usage instructions again
+  3. Use Model for import, face selection and segmentation
+  4. Use Scan planning for viewpoint generation and path ordering
+  5. Use Inspection and speed for collision checks and speed planning
+  6. Use RoboDK and export for calibration, reachability and transfer
+  7. Use View and settings for layers, language, command size and help
 """
 
 
@@ -1956,6 +1964,8 @@ def run():
     print(USAGE_TEXT_INLINE)
 
     apply_application_theme(QtCore, QtGui, QtWidgets, get_main_window())
+    configure_viewer(display)
+    configure_viewer(display)
 
     # Menu IDs are stable; visible labels are read from the active JSON catalog.
     _add_translated_menu("File", "menu.file")

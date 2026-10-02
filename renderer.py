@@ -8,6 +8,8 @@ from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeSphere
 from OCC.Core.gp import gp_Pnt
 from OCC.Display.OCCViewer import rgb_color
+from OCC.Core.Graphic3d import Graphic3d_NOM_SATIN
+from scene_style import MODEL, PATCHES, SELECTED, CENTER, CANDIDATE, OPTIMAL, PATH, SENSOR
 from dataclasses import dataclass
 
 from geometry import (
@@ -43,6 +45,24 @@ class RenderRequest:
         self.fit_all = fit_all
 
 
+def clear_interactive_selection(display):
+    """Release OCCT selection owners before removing displayed AIS shapes."""
+    context = getattr(display, "Context", None)
+    if context is not None:
+        for name in ("UnhilightSelected", "ClearSelected", "ClearDetected"):
+            method = getattr(context, name, None)
+            if method is not None:
+                try:
+                    method(False)
+                except (TypeError, AttributeError):
+                    pass
+
+
+def erase_scene_safely(display):
+    clear_interactive_selection(display)
+    display.EraseAll()
+
+
 # ---------------------------------------------------------------------------
 # Scene rendering
 # ---------------------------------------------------------------------------
@@ -55,7 +75,7 @@ def render_scene(display, vis, current_shape, current_faces,
                  workpiece_coordinate_system_objects, coordinate_systems,
                  optimal_path_objects,
                  sensor_volume_objects, obb_visualizations,
-                 fit_all=True):
+                 fit_all=True, selected_face=None):
     """Redraw the entire scene from current state and visibility flags.
 
     All mutable collection handles are cleared and re-populated in-place so
@@ -66,7 +86,7 @@ def render_scene(display, vis, current_shape, current_faces,
     Display-handle collections are updated in place.
     """
     try:
-        display.EraseAll()
+        erase_scene_safely(display)
         workpiece_coordinate_system_objects.clear()
         coordinate_systems.clear()
         optimal_path_objects.clear()
@@ -76,15 +96,10 @@ def render_scene(display, vis, current_shape, current_faces,
         # --- model / patches ---
         if vis.model and current_shape is not None:
             if current_faces:
-                colors = [
-                    rgb_color(0.8, 0.8, 1.0),
-                    rgb_color(1.0, 0.8, 0.8),
-                    rgb_color(0.8, 1.0, 0.8),
-                    rgb_color(1.0, 1.0, 0.8),
-                ]
+                colors = PATCHES
                 if any(is_surface_patch(face) for face in current_faces):
                     display.DisplayShape(
-                        current_shape, color=rgb_color(0.7, 0.7, 0.7),
+                        current_shape, color=MODEL, material=Graphic3d_NOM_SATIN,
                         transparency=0.35, update=False)
                     for i, patch in enumerate(current_faces):
                         if is_surface_patch(patch):
@@ -92,14 +107,21 @@ def render_scene(display, vis, current_shape, current_faces,
                                 patch.center, color=colors[i % len(colors)], update=False)
                 else:
                     for i, face in enumerate(current_faces):
-                        display.DisplayShape(face, color=colors[i % len(colors)], update=False)
+                        display.DisplayShape(face, color=colors[i % len(colors)],
+                                             material=Graphic3d_NOM_SATIN, update=False)
             else:
-                display.DisplayShape(current_shape, color=rgb_color(0.7, 0.7, 0.7), update=False)
+                display.DisplayShape(current_shape, color=MODEL,
+                                     material=Graphic3d_NOM_SATIN, update=False)
+
+            if selected_face is not None:
+                display.DisplayShape(selected_face, color=SELECTED,
+                                     material=Graphic3d_NOM_SATIN,
+                                     transparency=0.15, update=False)
 
         # --- face centres ---
         if vis.face_centers:
             for i, center in enumerate(face_centers):
-                display.DisplayShape(center, color=rgb_color(1, 0, 0), update=False)
+                display.DisplayShape(center, color=CENTER, update=False)
                 if i < len(current_faces):
                     normal = face_normals[i] if i < len(face_normals) else calculate_face_normal(current_faces[i])
                     tri = display_coordinate_system(display, center, normal, size=10.0)
@@ -110,14 +132,14 @@ def render_scene(display, vis, current_shape, current_faces,
         if vis.normal_lines:
             for i in range(min(len(face_centers), len(center_view_points))):
                 edge = BRepBuilderAPI_MakeEdge(face_centers[i], center_view_points[i])
-                display.DisplayShape(edge.Edge(), color=rgb_color(0.5, 0.5, 1.0), update=False)
+                display.DisplayShape(edge.Edge(), color=CANDIDATE, update=False)
 
         # --- viewpoints ---
         num_centers = len(face_centers)
         if vis.all_viewpoints:
             for i in range(min(num_centers, len(center_view_points))):
                 vp = center_view_points[i]
-                display.DisplayShape(vp, color=rgb_color(0, 0, 1), update=False)
+                display.DisplayShape(vp, color=CANDIDATE, update=False)
                 if i < len(current_faces) and i < len(face_centers):
                     normal = face_normals[i] if i < len(face_normals) else calculate_face_normal(current_faces[i])
                     tri = display_coordinate_system(display, vp, normal, size=8.0, center=face_centers[i])
@@ -126,7 +148,7 @@ def render_scene(display, vis, current_shape, current_faces,
 
             for i in range(num_centers, len(view_points)):
                 vp = view_points[i]
-                display.DisplayShape(vp, color=rgb_color(0, 0.5, 0.5), update=False)
+                display.DisplayShape(vp, color=SENSOR, update=False)
                 face_idx = (i - num_centers) // NUM_CANDIDATES_PER_FACE
                 if face_idx < len(current_faces) and face_idx < len(face_centers):
                     normal = face_normals[face_idx] if face_idx < len(face_normals) else calculate_face_normal(current_faces[face_idx])
@@ -135,12 +157,12 @@ def render_scene(display, vis, current_shape, current_faces,
                         coordinate_systems.append(tri)
         elif vis.optimal_viewpoints:
             for vp in optimal_viewpoints:
-                display.DisplayShape(vp, color=rgb_color(0, 1, 0), update=False)
+                display.DisplayShape(vp, color=OPTIMAL, update=False)
 
         # --- optimal viewpoints (always drawn on top when flag set) ---
         if vis.optimal_viewpoints:
             for vp in optimal_viewpoints:
-                display.DisplayShape(vp, color=rgb_color(0, 1, 0), update=False)
+                display.DisplayShape(vp, color=OPTIMAL, update=False)
 
         # --- sensor volumes ---
         if vis.sensor_volumes:
@@ -154,7 +176,7 @@ def render_scene(display, vis, current_shape, current_faces,
             for obb in face_obbs:
                 shape = ConvertBndToShape(obb)
                 if shape:
-                    obj = display.DisplayShape(shape, color=rgb_color(0, 0, 1),
+                    obj = display.DisplayShape(shape, color=CANDIDATE,
                                                transparency=0.7, update=False)
                     if obj:
                         obb_visualizations.append(obj)
@@ -204,6 +226,6 @@ def _draw_path_edges(display, path, points, path_objects):
             p1, p2 = start, end
 
         edge = BRepBuilderAPI_MakeEdge(p1, p2)
-        obj = display.DisplayShape(edge.Edge(), color=rgb_color(1, 0, 1), update=False)
+        obj = display.DisplayShape(edge.Edge(), color=PATH, update=False)
         if obj:
             path_objects.append(obj)

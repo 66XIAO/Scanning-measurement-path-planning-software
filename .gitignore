@@ -16,3 +16,4 @@ calibration/*.json
 archive/qwen/
 diagnostics/
 config/local_environment.ps1
+artifacts/ui-smoke*/
