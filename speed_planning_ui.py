@@ -33,7 +33,7 @@ def _translate_dialog_buttons(QtWidgets, buttons):
             button.setText(tr(key))
 
 
-def get_speed_planning_settings(parent=None):
+def get_speed_planning_settings(parent=None, current=None):
     QtCore, QtWidgets = _qt()
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle(tr("dialog.speed.title"))
@@ -64,6 +64,13 @@ def get_speed_planning_settings(parent=None):
         "safety_factor": _double_spin(QtWidgets, 0.1, 1.0, 0.90, decimals=3),
         "accel_margin_factor": _double_spin(QtWidgets, 1.0, 2.0, 1.10, decimals=3),
     }
+    current = current or {}
+    algorithm_index = algorithm.findData(current.get("algorithm", "deterministic"))
+    if algorithm_index >= 0:
+        algorithm.setCurrentIndex(algorithm_index)
+    for key, widget in widgets.items():
+        if key in current:
+            widget.setValue(float(current[key]))
     for key, widget in widgets.items():
         form.addRow(tr("dialog.speed." + key), widget)
 
@@ -76,6 +83,12 @@ def get_speed_planning_settings(parent=None):
     seed = QtWidgets.QSpinBox()
     seed.setRange(0, 2147483647)
     seed.setValue(7)
+    if "speed_levels" in current:
+        speed_levels.setValue(int(current["speed_levels"]))
+    if "training_episodes" in current:
+        episodes.setValue(int(current["training_episodes"]))
+    if "random_seed" in current:
+        seed.setValue(int(current["random_seed"]))
     form.addRow(tr("dialog.speed.speed_levels"), speed_levels)
     form.addRow(tr("dialog.speed.episodes"), episodes)
     form.addRow(tr("dialog.speed.seed"), seed)

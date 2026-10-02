@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import uuid
 
 
 @dataclass
@@ -25,6 +27,22 @@ class ViewpointRecord:
 
 @dataclass
 class AppState:
+    # Workstation/session metadata. Runtime display handles remain below and
+    # are deliberately excluded by workstation_io.
+    workstation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    workstation_path: str = ""
+    workstation_created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    workstation_saved_at: str = ""
+    workstation_dirty: bool = False
+    model_source_path: str = ""
+    model_source_name: str = ""
+    model_source_format: str = ""
+    segmentation_parameters: dict = field(default_factory=dict)
+    algorithm_parameters: dict = field(default_factory=dict)
+    collision_results: list = field(default_factory=list)
+    operation_history: list = field(default_factory=list)
+
     # Model state
     current_shape: object = None
     current_faces: list = field(default_factory=list)
@@ -33,6 +51,7 @@ class AppState:
     surface_patches: list = field(default_factory=list)
     last_segmentation_diagnostics: dict = field(default_factory=dict)
     selected_face: object = None
+    selected_face_source_index: int = -1
     original_face_normal: object = None
 
     # Geometry
@@ -56,6 +75,7 @@ class AppState:
     optimal_path: list = field(default_factory=list)
     last_path_length: float = 0.0
     last_path_algorithm: str = ""
+    path_algorithm_diagnostics: dict = field(default_factory=dict)
 
     # Speed planning (created only after an ordered path exists)
     speed_plan_result: object = None
@@ -107,12 +127,47 @@ class AppState:
     # Workflow
     workflow_steps: list = field(default_factory=list)
 
+    def record_operation(self, operation, parameters=None, status="completed",
+                         summary="", mark_dirty=True):
+        self.operation_history.append({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "operation": str(operation),
+            "parameters": dict(parameters or {}),
+            "status": str(status),
+            "summary": str(summary),
+        })
+        if mark_dirty:
+            self.workstation_dirty = True
+
+    def mark_modified(self):
+        self.workstation_dirty = True
+
+    def begin_new_workstation(self):
+        self.workstation_id = str(uuid.uuid4())
+        self.workstation_path = ""
+        self.workstation_created_at = datetime.now(timezone.utc).isoformat()
+        self.workstation_saved_at = ""
+        self.workstation_dirty = False
+        self.model_source_path = ""
+        self.model_source_name = ""
+        self.model_source_format = ""
+        self.segmentation_parameters.clear()
+        self.algorithm_parameters.clear()
+        self.collision_results.clear()
+        self.operation_history.clear()
+
     def reset_all(self):
+        self.model_source_path = ""
+        self.model_source_name = ""
+        self.model_source_format = ""
+        self.segmentation_parameters.clear()
+        self.algorithm_parameters.clear()
         self.current_shape = None
         self.current_faces.clear()
         self.surface_patches.clear()
         self.last_segmentation_diagnostics.clear()
         self.selected_face = None
+        self.selected_face_source_index = -1
         self.original_face_normal = None
         self.face_centers.clear()
         self.face_normals.clear()
@@ -128,12 +183,14 @@ class AppState:
         self.optimal_path.clear()
         self.last_path_length = 0.0
         self.last_path_algorithm = ""
+        self.path_algorithm_diagnostics.clear()
         self.speed_plan_result = None
         self.last_speed_csv_path = ""
         self.last_robodk_import.clear()
         self.last_reachability_report.clear()
         self.sensor_volumes_list.clear()
         self.face_obbs.clear()
+        self.collision_results.clear()
         self.workpiece_coordinate_system_size = 0.0
         self.workpiece_coordinate_system_objects.clear()
         self.coordinate_systems.clear()
@@ -166,6 +223,7 @@ class AppState:
         self.optimal_path.clear()
         self.last_path_length = 0.0
         self.last_path_algorithm = ""
+        self.path_algorithm_diagnostics.clear()
         self.speed_plan_result = None
         self.last_speed_csv_path = ""
         self.last_robodk_import.clear()
@@ -177,3 +235,48 @@ class AppState:
         self.collision_detection_executed = False
         self.sensor_volumes_created = False
         self.obb_boxes_generated = False
+
+    def invalidate_after_centers(self):
+        """Invalidate viewpoint and later results after center recalculation."""
+        self.center_view_points.clear()
+        self.view_points.clear()
+        self.center_view_points_with_pose.clear()
+        self.view_points_with_pose.clear()
+        self.viewpoint_records.clear()
+        self.center_viewpoint_records.clear()
+        self.invalidate_after_viewpoints()
+
+    def invalidate_after_viewpoints(self):
+        """Invalidate selections, collision/path and speed derived from viewpoints."""
+        self.optimal_viewpoints.clear()
+        self.optimal_viewpoints_with_pose.clear()
+        self.optimal_viewpoint_records.clear()
+        self.optimal_path.clear()
+        self.last_path_length = 0.0
+        self.last_path_algorithm = ""
+        self.path_algorithm_diagnostics.clear()
+        self.speed_plan_result = None
+        self.last_speed_csv_path = ""
+        self.last_robodk_import.clear()
+        self.last_reachability_report.clear()
+        self.sensor_volumes_list.clear()
+        self.face_obbs.clear()
+        self.collision_results.clear()
+        self.collision_detection_executed = False
+        self.sensor_volumes_created = False
+        self.obb_boxes_generated = False
+
+    def invalidate_after_optimal_viewpoints(self):
+        """Invalidate ordered-path and sensor results after optimal selection."""
+        self.optimal_path.clear()
+        self.last_path_length = 0.0
+        self.last_path_algorithm = ""
+        self.path_algorithm_diagnostics.clear()
+        self.speed_plan_result = None
+        self.last_speed_csv_path = ""
+        self.last_robodk_import.clear()
+        self.last_reachability_report.clear()
+        self.sensor_volumes_list.clear()
+        self.collision_results.clear()
+        self.collision_detection_executed = False
+        self.sensor_volumes_created = False

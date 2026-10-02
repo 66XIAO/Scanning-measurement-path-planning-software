@@ -1,4 +1,4 @@
-"""Drag-and-drop support for loading one STEP/IGES model into the OCC viewer.
+"""Drag-and-drop support for CAD models and ``.swstation`` workstations.
 
 The module deliberately does not import Qt or pythonOCC at import time.  Path
 extraction and validation are therefore unit-testable in the lightweight test
@@ -19,6 +19,9 @@ from urllib.parse import unquote, urlsplit
 
 
 SUPPORTED_MODEL_EXTENSIONS = frozenset((".step", ".stp", ".iges", ".igs"))
+SUPPORTED_WORKSTATION_EXTENSIONS = frozenset((".swstation",))
+SUPPORTED_DROP_EXTENSIONS = (
+    SUPPORTED_MODEL_EXTENSIONS | SUPPORTED_WORKSTATION_EXTENSIONS)
 DEFAULT_DIRECTORY_SCAN_LIMIT = 5000
 
 # English defaults keep this module independent from the application's i18n
@@ -32,30 +35,30 @@ _ENGLISH_DROP_TEXT = {
     "drop.issue.empty_path": "The dropped item has an empty path",
     "drop.issue.empty_local_path": "The dropped item has an empty local path",
     "drop.issue.directory_limit":
-        "Directory contains more than {limit} entries; drop one model file directly",
+        "Directory contains more than {limit} entries; drop one supported file directly",
     "drop.issue.directory_read": "Cannot read directory: {error}",
     "drop.issue.directory_no_model":
-        "Directory has no STEP/IGES model in its top level",
+        "Directory has no STEP/IGES model or .swstation file in its top level",
     "drop.issue.unsupported_format":
         "Unsupported format {extension} for {filename}; accepted extensions are "
-        ".step, .stp, .iges, .igs",
+        ".step, .stp, .iges, .igs, .swstation",
     "drop.issue.not_regular":
         "Dropped item is not a regular file or directory: {filename}",
     "drop.issue.not_found": "File or directory does not exist: {filename}",
-    "drop.feedback.release": "Release to import model: {filename}",
+    "drop.feedback.release": "Release to open: {filename}",
     "drop.feedback.multiple":
-        "{count} supported models detected; this viewer accepts one model at a time",
-    "drop.feedback.prompt": "Drop one STEP or IGES model file",
+        "{count} supported files detected; this viewer accepts one at a time",
+    "drop.feedback.prompt": "Drop one STEP/IGES model or .swstation file",
     "drop.error.multiple":
-        "The drop contains {count} supported models, but the application owns one "
-        "active model at a time. Drop a single file.",
+        "The drop contains {count} supported files, but the application owns one "
+        "active model or workstation at a time. Drop a single file.",
     "drop.error.issue_header": "The dropped item cannot be imported:",
     "drop.error.issue_line": "- {source}: {reason}",
     "drop.error.path_line": "- {path}",
-    "drop.error.prompt": "Drop one local STEP or IGES model file.",
+    "drop.error.prompt": "Drop one local STEP/IGES model or .swstation file.",
     "drop.error.more": "... and {count} more",
-    "drop.status.loading": "Loading dropped model: {filename}",
-    "drop.status.start_failed": "Could not start model import: {error}",
+    "drop.status.loading": "Opening dropped file: {filename}",
+    "drop.status.start_failed": "Could not open dropped file: {error}",
 }
 
 _WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
@@ -144,8 +147,13 @@ class ModelDropResolution:
 
 
 def is_supported_model_path(path: str) -> bool:
-    """Return whether *path* has a supported CAD extension."""
+    """Return whether *path* has a supported CAD-model extension."""
     return os.path.splitext(os.fspath(path))[1].lower() in SUPPORTED_MODEL_EXTENSIONS
+
+
+def is_supported_drop_path(path: str) -> bool:
+    """Return whether *path* is a supported CAD model or workstation."""
+    return os.path.splitext(os.fspath(path))[1].lower() in SUPPORTED_DROP_EXTENSIONS
 
 
 def _strip_matching_quotes(text: str) -> str:
@@ -269,7 +277,7 @@ def _scan_directory(directory: str, scan_limit: int) -> Tuple[List[str], Optiona
                     is_file = entry.is_file(follow_symlinks=True)
                 except OSError:
                     is_file = False
-                if is_file and is_supported_model_path(entry.name):
+                if is_file and is_supported_drop_path(entry.name):
                     models.append(os.path.abspath(entry.path))
     except OSError as exc:
         return [], DropIssue(
@@ -291,7 +299,7 @@ def resolve_model_drop(
     """Resolve drag sources to local supported files without importing them.
 
     Directories are scanned non-recursively.  The result is importable only
-    when exactly one unique STEP/IGES file is found.
+    when exactly one unique CAD model or workstation file is found.
     """
     if directory_scan_limit < 1:
         raise ValueError("directory_scan_limit must be at least 1")
@@ -314,7 +322,7 @@ def resolve_model_drop(
                 issues.append(issue)
             candidates = directory_models
         elif os.path.isfile(path):
-            if not is_supported_model_path(path):
+            if not is_supported_drop_path(path):
                 extension = os.path.splitext(path)[1].lower() or "(none)"
                 issues.append(DropIssue(
                     path,

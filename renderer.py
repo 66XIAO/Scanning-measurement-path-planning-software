@@ -102,7 +102,8 @@ def render_scene(display, vis, current_shape, current_faces,
                 display.DisplayShape(center, color=rgb_color(1, 0, 0), update=False)
                 if i < len(current_faces):
                     normal = face_normals[i] if i < len(face_normals) else calculate_face_normal(current_faces[i])
-                    tri = display_coordinate_system(display, center, normal, size=10.0)
+                    tri = display_coordinate_system(
+                        display, center, normal, size=10.0, update=False)
                     if tri:
                         coordinate_systems.append(tri)
 
@@ -120,7 +121,9 @@ def render_scene(display, vis, current_shape, current_faces,
                 display.DisplayShape(vp, color=rgb_color(0, 0, 1), update=False)
                 if i < len(current_faces) and i < len(face_centers):
                     normal = face_normals[i] if i < len(face_normals) else calculate_face_normal(current_faces[i])
-                    tri = display_coordinate_system(display, vp, normal, size=8.0, center=face_centers[i])
+                    tri = display_coordinate_system(
+                        display, vp, normal, size=8.0,
+                        center=face_centers[i], update=False)
                     if tri:
                         coordinate_systems.append(tri)
 
@@ -130,7 +133,9 @@ def render_scene(display, vis, current_shape, current_faces,
                 face_idx = (i - num_centers) // NUM_CANDIDATES_PER_FACE
                 if face_idx < len(current_faces) and face_idx < len(face_centers):
                     normal = face_normals[face_idx] if face_idx < len(face_normals) else calculate_face_normal(current_faces[face_idx])
-                    tri = display_coordinate_system(display, vp, normal, size=6.0, center=face_centers[face_idx])
+                    tri = display_coordinate_system(
+                        display, vp, normal, size=6.0,
+                        center=face_centers[face_idx], update=False)
                     if tri:
                         coordinate_systems.append(tri)
         elif vis.optimal_viewpoints:
