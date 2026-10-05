@@ -7,7 +7,7 @@ from geometry import (
     calculate_workpiece_coordinate_size,
     display_workpiece_coordinate_system,
 )
-from renderer import LayerVisibility, render_scene
+from renderer import LayerVisibility, erase_all_safely, render_scene
 from state import AppState
 
 
@@ -44,7 +44,48 @@ class _FakeDisplay:
         self.events.append("repaint")
 
 
+class _SelectionContext:
+    def __init__(self, events):
+        self.events = events
+
+    def Deactivate(self):
+        self.events.append("deactivate")
+
+    def UnhilightSelected(self, update):
+        self.events.append(("unhilight_selected", update))
+
+    def ClearSelected(self, update):
+        self.events.append(("clear_selected", update))
+
+    def ClearDetected(self, update):
+        self.events.append(("clear_detected", update))
+
+
+class _SelectionDisplay:
+    def __init__(self):
+        self.events = []
+        self.selected_shapes = [object()]
+        self.Context = _SelectionContext(self.events)
+
+    def EraseAll(self):
+        self.events.append("erase_all")
+
+
 class WorkpieceCoordinateSystemTests(unittest.TestCase):
+    def test_scene_erase_releases_selection_owners_first(self):
+        display = _SelectionDisplay()
+
+        erase_all_safely(display)
+
+        self.assertEqual(display.selected_shapes, [])
+        self.assertEqual(display.events, [
+            "deactivate",
+            ("unhilight_selected", False),
+            ("clear_selected", False),
+            ("clear_detected", False),
+            "erase_all",
+        ])
+
     def test_axis_size_tracks_model_bounding_box(self):
         shape = BRepPrimAPI_MakeBox(100.0, 200.0, 300.0).Shape()
         actual = calculate_workpiece_coordinate_size(shape)

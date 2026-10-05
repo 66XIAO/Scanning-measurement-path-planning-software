@@ -23,13 +23,26 @@ if (-not (Test-Path -LiteralPath $Bootstrap)) {
 }
 
 Write-Host "Using Conda environment: $CondaEnvironment"
-$Arguments = @('run', '--no-capture-output', '-n', $CondaEnvironment, 'python', $Bootstrap)
+$BaseArguments = @('run', '--no-capture-output', '-n', $CondaEnvironment,
+                   'python', '-X', 'faulthandler', $Bootstrap)
+$PreflightArguments = $BaseArguments + @('--check')
+
+& $CondaCommand.Source @PreflightArguments
+$PreflightExitCode = $LASTEXITCODE
+if ($PreflightExitCode -eq -1) {
+    Write-Warning 'Native CAD/GUI dependency preflight exited unexpectedly; retrying once.'
+    & $CondaCommand.Source @PreflightArguments
+    $PreflightExitCode = $LASTEXITCODE
+}
+if ($PreflightExitCode -ne 0) {
+    throw "Application environment preflight failed with exit code $PreflightExitCode."
+}
 if ($CheckOnly) {
-    $Arguments += '--check'
+    exit 0
 }
 
-& $CondaCommand.Source @Arguments
+& $CondaCommand.Source @($BaseArguments + @('--skip-check'))
 $AppExitCode = $LASTEXITCODE
 if ($AppExitCode -ne 0) {
-    throw "Application environment check/start failed with exit code $AppExitCode."
+    throw "Application start/runtime failed with exit code $AppExitCode."
 }

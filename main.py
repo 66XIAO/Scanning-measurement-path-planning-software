@@ -13,22 +13,24 @@ import hashlib
 import traceback
 
 import numpy as np
+import OCC
 
 from OCC.Core.TopAbs import TopAbs_FACE
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
 from OCC.Core.gp import gp_Pnt, gp_Vec
-from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeSphere
 from OCC.Display.OCCViewer import rgb_color
 from OCC.Display.SimpleGui import init_display
 from OCC.Display import backend as occ_backend
 from OCC.Display.backend import get_qt_modules
 
-from config import VIEWPOINT_DISTANCE, NUM_CANDIDATES_PER_FACE, ZENITH_ANGLE_DEG
+from config import (
+    VIEWPOINT_DISTANCE, NUM_CANDIDATES_PER_FACE, ZENITH_ANGLE_DEG,
+    DEFAULT_ABC_CONFIG, DEFAULT_MSCGA_CONFIG,
+)
 from state import AppState, ViewpointRecord
 from geometry import (
     calculate_face_normal, calculate_workpiece_coordinate_size,
     segment_model, generate_viewpoint,
-    display_coordinate_system, generate_face_obb, ConvertBndToShape,
+    generate_face_obb, ConvertBndToShape,
 )
 from viewpoints import (
     calculate_viewpoint_pose, build_center_viewpoints, build_candidate_viewpoints,
@@ -42,17 +44,22 @@ from planning import (
     solve_greedy_open_path, run_abc_solver, run_mscga_solver,
     solve_sequential_open_path,
 )
-from renderer import (render_scene as _render_scene, draw_path_edges,
-                      LayerVisibility, erase_scene_safely,
-                      clear_interactive_selection)
+from renderer import (
+    LayerVisibility,
+    clear_interactive_selection,
+    draw_path_edges,
+    erase_all_safely,
+    render_scene as _render_scene,
+)
 from ui_panels import (
     show_topmost_message, get_main_window, set_status_message,
     create_workflow_panel, create_layer_panel, update_workflow_status as _update_ws,
     sync_layer_panel as _sync_layer_panel, get_user_segment_params,
     get_sensor_parameters_dialog, show_usage_instructions, build_workflow_snapshot,
     format_workflow_snapshot, retranslate_panels,
+    create_operation_panel, update_operation_panel,
 )
-from workers import TaskRunner
+from workers import TaskRunner, supports_background_occ_objects
 from export_utils import write_path_pose_csv, write_speed_plan_csv
 from speed_planning_core import ConstraintProfile, plan_speed_profile
 from speed_planning_ui import (
@@ -81,7 +88,10 @@ from ui_theme import (
     apply_application_theme, create_primary_toolbar, decorate_action,
     retranslate_ribbon, ribbon_page, set_ribbon_size,
 )
-from scene_style import CENTER, OPTIMAL, ERROR, configure_viewer
+from scene_style import ERROR, configure_viewer
+from workstation_io import (
+    capture_workstation, load_workstation, save_workstation,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +139,9 @@ normal_line_objects = []
 
 # Background-task infrastructure
 task_runner = TaskRunner(QtCore, QtWidgets, get_main_window)
+PYTHONOCC_VERSION = getattr(OCC, "VERSION", "unknown")
+OCC_BACKGROUND_OBJECTS_SUPPORTED = supports_background_occ_objects(
+    PYTHONOCC_VERSION)
 
 # Path-planning confirmation flag
 path_planning_prompt_confirmed = False
@@ -149,6 +162,7 @@ _translated_actions = []
 _language_subscription = None
 _face_callback_registered = False
 _awaiting_face_selection = False
+_workstation_io_active = False
 
 
 # ---------------------------------------------------------------------------
@@ -168,13 +182,10 @@ class MainWindowCloseEvent(QtCore.QObject):
                 return super(MainWindowCloseEvent, self).eventFilter(obj, event)
             _closing_dialog_active = True
             try:
-                result = show_topmost_message(
-                    tr("message.confirm_exit.title"),
-                    tr("message.confirm_exit.body"),
-                    type="question")
+                proceed = _confirm_discard_or_save()
             finally:
                 _closing_dialog_active = False
-            if result == "no":
+            if not proceed:
                 event.ignore()
                 return True
         return super(MainWindowCloseEvent, self).eventFilter(obj, event)
@@ -184,8 +195,26 @@ class MainWindowCloseEvent(QtCore.QObject):
 # 4. Rendering helper (bridges state → renderer.render_scene)
 # ---------------------------------------------------------------------------
 
+def _clear_selected_face_highlight(update=False):
+    """Remove the retained face highlight before a whole-scene erase."""
+    clear_interactive_selection(display)
+    highlight = state.selected_face_highlight
+    if highlight is None:
+        return
+    try:
+        display.Context.Remove(highlight, bool(update))
+    except Exception:
+        try:
+            display.Context.Erase(highlight, bool(update))
+        except Exception:
+            pass
+    finally:
+        state.selected_face_highlight = None
+
+
 def _do_render(fit_all=True):
     """Centralised scene redraw from current *state*."""
+    _clear_selected_face_highlight(update=False)
     vis = LayerVisibility(
         model=state.show_model,
         workpiece_coordinate_system=state.show_workpiece_coordinate_system,
@@ -215,6 +244,23 @@ def _do_render(fit_all=True):
 
 def _update_workflow(message=None):
     _update_ws(message, state)
+    update_operation_panel(state)
+
+
+def _update_window_title():
+    window = get_main_window()
+    if window is None:
+        return
+    name = (os.path.basename(state.workstation_path)
+            if state.workstation_path else tr("workstation.untitled"))
+    dirty = " *" if state.workstation_dirty else ""
+    window.setWindowTitle("{} - {}{}".format(tr("app.title"), name, dirty))
+
+
+def _record_operation(operation, parameters=None, status="completed", summary=""):
+    state.record_operation(operation, parameters, status, summary)
+    _update_window_title()
+    update_operation_panel(state)
 
 
 def _sync_layer():
@@ -262,7 +308,7 @@ def _retranslate_main_ui(_locale=None):
     window = get_main_window()
     if window is not None:
         window.setObjectName("MainWindow")
-        window.setWindowTitle(tr("app.title"))
+        _update_window_title()
     for menu, translation_key in _translated_menus.values():
         menu.setTitle(tr(translation_key))
     for action in _translated_actions:
@@ -312,6 +358,42 @@ def run_background_task(title, message, fn, on_success, on_error=None):
     return task_runner.run(title, message, fn, on_success, failure)
 
 
+def run_occ_native_task(title, message, fn, on_success, on_error=None):
+    """Run an OCC object-producing task on a version-compatible thread."""
+    if OCC_BACKGROUND_OBJECTS_SUPPORTED:
+        return run_background_task(
+            title, message, fn, on_success, on_error)
+
+    # pythonOCC/OCCT 7.4 can complete the calculation in a QThread but crash
+    # natively when the returned TopoDS objects are rendered on the GUI thread.
+    # Keep object construction and consumption on the main thread for this
+    # legacy runtime. Pure-Python solvers continue to use TaskRunner.
+    print("pythonOCC {} compatibility: running '{}' on the main thread".format(
+        PYTHONOCC_VERSION, title))
+    parent = get_main_window()
+    progress = QtWidgets.QProgressDialog(message, None, 0, 0, parent)
+    progress.setWindowTitle(title)
+    progress.setWindowModality(QtCore.Qt.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+    progress.show()
+    QtWidgets.QApplication.processEvents()
+    try:
+        result = fn()
+    except Exception as exc:
+        error_text = "{}\n{}".format(str(exc), traceback.format_exc())
+        if on_error:
+            on_error(error_text)
+        else:
+            show_topmost_message(tr("common.error"), error_text, type="error")
+        return None
+    finally:
+        progress.close()
+    on_success(result)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 6. Path helpers
 # ---------------------------------------------------------------------------
@@ -319,6 +401,8 @@ def run_background_task(title, message, fn, on_success, on_error=None):
 def _delete_existing_path():
     state.optimal_path.clear()
     state.last_path_length = 0.0
+    state.last_path_algorithm = ""
+    state.path_algorithm_diagnostics.clear()
     state.speed_plan_result = None
     state.last_speed_csv_path = ""
     state.last_robodk_import.clear()
@@ -374,6 +458,8 @@ def _invalidate_after_path_mutation(keep_path=True):
     if not keep_path:
         state.optimal_path.clear()
         state.last_path_length = 0.0
+        state.last_path_algorithm = ""
+        state.path_algorithm_diagnostics.clear()
         for obj in state.optimal_path_objects:
             try:
                 display.Context.Erase(obj, True)
@@ -431,6 +517,208 @@ def _confirm_path_prompt():
 # 7. File menu handlers
 # ---------------------------------------------------------------------------
 
+def _workstation_busy():
+    return bool(_workstation_io_active or task_runner.active_workers)
+
+
+def _confirm_discard_or_save():
+    """Return True when a destructive lifecycle action may continue."""
+    if _workstation_busy():
+        show_topmost_message(tr("common.prompt"), tr("workstation.busy"), type="warning")
+        return False
+    if not state.workstation_dirty:
+        return True
+    box = QtWidgets.QMessageBox(get_main_window())
+    box.setWindowTitle(tr("workstation.unsaved.title"))
+    box.setText(tr("workstation.unsaved.body"))
+    box.setIcon(QtWidgets.QMessageBox.Warning)
+    box.setStandardButtons(
+        QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Discard |
+        QtWidgets.QMessageBox.Cancel)
+    box.setDefaultButton(QtWidgets.QMessageBox.Save)
+    result = (getattr(box, "exec", None) or getattr(box, "exec_"))()
+    if result == QtWidgets.QMessageBox.Cancel:
+        return False
+    if result == QtWidgets.QMessageBox.Discard:
+        return True
+    return save_workstation_ui()
+
+
+def _capture_view_state():
+    result = {}
+    try:
+        camera = display.View.Camera()
+        for name, getter in (("eye", camera.Eye), ("center", camera.Center),
+                             ("up", camera.Up)):
+            value = getter()
+            result[name] = [value.X(), value.Y(), value.Z()]
+        result["scale"] = float(camera.Scale())
+    except Exception:
+        pass
+    return result
+
+
+def _restore_view_state(view_state):
+    try:
+        camera = display.View.Camera()
+        if "eye" in view_state:
+            camera.SetEye(gp_Pnt(*view_state["eye"]))
+        if "center" in view_state:
+            camera.SetCenter(gp_Pnt(*view_state["center"]))
+        if "up" in view_state:
+            from OCC.Core.gp import gp_Dir
+            camera.SetUp(gp_Dir(*view_state["up"]))
+        if "scale" in view_state:
+            camera.SetScale(float(view_state["scale"]))
+        display.Repaint()
+    except Exception as exc:
+        print("View restoration warning: {}".format(exc))
+
+
+def _clear_runtime_scene():
+    global _awaiting_face_selection
+    _awaiting_face_selection = False
+    _clear_selected_face_highlight(update=False)
+    erase_all_safely(display)
+    center_points_objects.clear()
+    normal_line_objects.clear()
+
+
+def new_workstation(event=None):
+    global path_planning_prompt_confirmed
+    if _workstation_busy():
+        show_topmost_message(tr("common.prompt"), tr("workstation.busy"), type="warning")
+        return False
+    if not _confirm_discard_or_save():
+        return False
+    _clear_runtime_scene()
+    state.reset_all()
+    state.begin_new_workstation()
+    state.record_operation("new_workstation", mark_dirty=False)
+    path_planning_prompt_confirmed = False
+    _sync_layer()
+    _update_workflow(tr("workstation.new.complete"))
+    _update_window_title()
+    return True
+
+
+def _save_workstation_to(path):
+    global _workstation_io_active
+    if _workstation_busy():
+        show_topmost_message(tr("common.prompt"), tr("workstation.busy"), type="warning")
+        return False
+    _workstation_io_active = True
+    try:
+        state.record_operation(
+            "save_workstation", {"filename": os.path.basename(path)},
+            summary="manual save")
+        snapshot = capture_workstation(
+            state,
+            settings={"collision_detection_enabled": collision_detection_enabled},
+            view_state=_capture_view_state())
+        saved_path, manifest = save_workstation(path, snapshot)
+        state.workstation_path = saved_path
+        state.workstation_saved_at = manifest["saved_at"]
+        state.workstation_dirty = False
+        _update_window_title()
+        _update_workflow(tr("workstation.save.complete", filename=os.path.basename(saved_path)))
+        return True
+    except Exception as exc:
+        state.workstation_dirty = True
+        show_topmost_message(
+            tr("common.error"), tr("workstation.save.failed", error=exc), type="error")
+        return False
+    finally:
+        _workstation_io_active = False
+
+
+def save_workstation_ui(event=None):
+    if state.workstation_path:
+        return _save_workstation_to(state.workstation_path)
+    return save_workstation_as_ui()
+
+
+def save_workstation_as_ui(event=None):
+    if _workstation_busy():
+        show_topmost_message(tr("common.prompt"), tr("workstation.busy"), type="warning")
+        return False
+    path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        get_main_window(), tr("workstation.save_as.title"), "",
+        tr("workstation.file_filter"))
+    if not path:
+        return False
+    return _save_workstation_to(path)
+
+
+def open_workstation_from_path(path, confirm_changes=True):
+    global _workstation_io_active, collision_detection_enabled
+    path = os.path.abspath(os.fspath(path))
+    if os.path.splitext(path)[1].lower() != ".swstation":
+        show_topmost_message(
+            tr("common.error"),
+            tr("message.import.unsupported", extension=os.path.splitext(path)[1]),
+            type="error")
+        return False
+    if _workstation_busy():
+        show_topmost_message(tr("common.prompt"), tr("workstation.busy"), type="warning")
+        return False
+    if confirm_changes and not _confirm_discard_or_save():
+        return False
+    _workstation_io_active = True
+    try:
+        candidate = load_workstation(path)
+        old_values = dict(state.__dict__)
+        try:
+            _clear_runtime_scene()
+            state.__dict__.clear()
+            state.__dict__.update(candidate.state.__dict__)
+            collision_detection_enabled = bool(
+                candidate.settings.get("collision_detection_enabled", True))
+            _do_render(fit_all=not bool(candidate.view_state))
+            _restore_view_state(candidate.view_state)
+            _sync_layer()
+            _update_workflow(tr(
+                "workstation.open.complete", filename=os.path.basename(path)))
+            _update_window_title()
+        except Exception:
+            state.__dict__.clear()
+            state.__dict__.update(old_values)
+            _do_render()
+            raise
+        if candidate.warnings:
+            show_topmost_message(
+                tr("common.prompt"), "\n".join(
+                    tr("workstation.warning." + warning)
+                    for warning in candidate.warnings), type="warning")
+        return True
+    except Exception as exc:
+        show_topmost_message(
+            tr("common.error"), tr("workstation.open.failed", error=exc), type="error")
+        return False
+    finally:
+        _workstation_io_active = False
+
+
+def open_workstation(event=None):
+    if _workstation_busy():
+        show_topmost_message(tr("common.prompt"), tr("workstation.busy"), type="warning")
+        return False
+    if not _confirm_discard_or_save():
+        return False
+    path, _ = QtWidgets.QFileDialog.getOpenFileName(
+        get_main_window(), tr("workstation.open.title"), "",
+        tr("workstation.file_filter"))
+    if not path:
+        return False
+    return open_workstation_from_path(path, confirm_changes=False)
+
+
+def open_dropped_file(path):
+    """Dispatch a validated drop to the workstation or CAD loader."""
+    if os.path.splitext(os.fspath(path))[1].lower() == ".swstation":
+        return open_workstation_from_path(path)
+    return import_model_from_path(path)
+
 def import_model(event=None):
     parent = get_main_window()
     file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -444,6 +732,11 @@ def import_model(event=None):
 def import_model_from_path(file_path):
     """Start the existing atomic background import for a chosen/dropped file."""
     global path_planning_prompt_confirmed
+    if _workstation_busy():
+        show_topmost_message(tr("common.prompt"), tr("workstation.busy"), type="warning")
+        return
+    if state.workstation_dirty and not _confirm_discard_or_save():
+        return
     file_path = os.path.abspath(os.fspath(file_path))
 
     ext = os.path.splitext(file_path)[1].lower()
@@ -464,11 +757,17 @@ def import_model_from_path(file_path):
         new_shape, axis_size = import_result
         # Commit atomically only after parsing succeeds. Cancelling or a read
         # error leaves the previously loaded model and downstream state intact.
-        erase_scene_safely(display)
+        _clear_selected_face_highlight(update=False)
+        erase_all_safely(display)
         state.reset_all()
         _awaiting_face_selection = False
         state.current_shape = new_shape
         state.workpiece_coordinate_system_size = axis_size
+        state.model_source_path = file_path
+        state.model_source_name = os.path.basename(file_path)
+        state.model_source_format = ext.lstrip(".")
+        _record_operation("import_model", {"source": file_path},
+                          summary=os.path.basename(file_path))
         path_planning_prompt_confirmed = False
         _do_render()
         _sync_layer()
@@ -485,12 +784,17 @@ def import_model_from_path(file_path):
 
     set_status_message(tr(
         "message.import.loading", filename=os.path.basename(file_path)))
-    run_background_task(tr("file.import_model.title"), tr("message.import.reading"),
+    run_occ_native_task(tr("file.import_model.title"), tr("message.import.reading"),
                         load_shape, on_success, on_error)
 
 
 def clear_model(event=None):
     global path_planning_prompt_confirmed, _awaiting_face_selection
+    if _workstation_busy():
+        show_topmost_message(tr("common.prompt"), tr("workstation.busy"), type="warning")
+        return
+    if state.workstation_dirty and not _confirm_discard_or_save():
+        return
     result = show_topmost_message(
         tr("message.confirm_clear.title"),
         tr("message.confirm_clear.body"), type="question")
@@ -498,7 +802,7 @@ def clear_model(event=None):
         return
 
     try:
-        clear_interactive_selection(display)
+        _clear_selected_face_highlight(update=False)
         for cs in state.coordinate_systems:
             try:
                 display.Context.Erase(cs, True)
@@ -521,12 +825,13 @@ def clear_model(event=None):
                 except Exception:
                     pass
 
-        erase_scene_safely(display)
+        erase_all_safely(display)
         display.Context.UpdateCurrentViewer()
         display.Repaint()
 
         state.reset_all()
         _awaiting_face_selection = False
+        _record_operation("clear_model", summary="model and derived results cleared")
         center_points_objects.clear()
         normal_line_objects.clear()
         path_planning_prompt_confirmed = False
@@ -539,10 +844,7 @@ def clear_model(event=None):
 
 def exit_program(event=None):
     try:
-        result = show_topmost_message(
-            tr("message.confirm_exit.title"),
-            tr("message.confirm_exit.body"), type="question")
-        if result == 'yes':
+        if _confirm_discard_or_save():
             print("Program exited")
             sys.exit(0)
     except Exception as e:
@@ -579,12 +881,30 @@ def select_face_clicked(shapes, x, y):
     if shape.ShapeType() == TopAbs_FACE:
         _awaiting_face_selection = False
         state.selected_face = shape
+        state.selected_face_source_index = -1
+        try:
+            from OCC.Core.TopExp import TopExp_Explorer
+            explorer = TopExp_Explorer(state.current_shape, TopAbs_FACE)
+            source_index = 0
+            while explorer.More():
+                if explorer.Current().IsSame(shape):
+                    state.selected_face_source_index = source_index
+                    break
+                source_index += 1
+                explorer.Next()
+        except Exception:
+            pass
         state.original_face_normal = calculate_face_normal(state.selected_face)
+        _record_operation("select_face", {
+            "source_face_index": state.selected_face_source_index})
         print("Face selected, normal: ({:.4f}, {:.4f}, {:.4f})".format(
             state.original_face_normal.X(),
             state.original_face_normal.Y(),
             state.original_face_normal.Z()))
 
+        # The callback runs while OCCViewer still owns the Select() result.
+        # Release that selected/detected AIS owner before any later EraseAll.
+        _clear_selected_face_highlight(update=False)
         display.SetSelectionModeNeutral()
         _do_render(fit_all=False)
         _update_workflow(tr("message.face_selected"))
@@ -595,7 +915,7 @@ def segment_faces(event=None):
         show_topmost_message(tr("common.prompt"), tr("message.require.model"))
         return
     try:
-        params = get_user_segment_params()
+        params = get_user_segment_params(current=state.segmentation_parameters)
         if not params:
             return
         u, v = params
@@ -620,8 +940,15 @@ def segment_faces(event=None):
             state.surface_patches = [face for face in faces if is_surface_patch(face)]
             state.invalidate_after_segmentation()
             state.selected_face = None
+            state.selected_face_source_index = -1
             state.original_face_normal = None
             state.last_segmentation_diagnostics = diagnostics
+            state.segmentation_parameters = {
+                "u": int(u), "v": int(v),
+                "strategy": diagnostics.get("strategy", "equal_param")}
+            _record_operation(
+                "segment_faces", state.segmentation_parameters,
+                summary="{} patches".format(len(faces)))
             _do_render()
             strategy = diagnostics.get("strategy", "equal_param")
             print("Segmentation complete: {} patches (u={}, v={}, strategy={}), "
@@ -663,7 +990,7 @@ def segment_faces(event=None):
                 type="error")
 
         set_status_message(tr("message.segmentation.running"))
-        run_background_task(tr("action.segment_faces"), tr("message.segmentation.task"),
+        run_occ_native_task(tr("action.segment_faces"), tr("message.segmentation.task"),
                             lambda: segment_model(shape_to_segment, u, v,
                                                   return_diagnostics=True,
                                                   strategy="auto"),
@@ -673,25 +1000,18 @@ def segment_faces(event=None):
         traceback.print_exc()
 
 
-def get_centers(event=None):
+def get_centers(event=None, render=True):
     if not state.current_faces:
         show_topmost_message(tr("common.prompt"), tr("message.require.segment"))
         return
     try:
+        state.invalidate_after_centers()
         state.face_centers.clear()
         state.face_normals.clear()
 
-        for cs in state.coordinate_systems:
-            try:
-                display.Context.Erase(cs, True)
-            except Exception:
-                pass
+        # Runtime handles are discarded without incremental viewer updates;
+        # the single unified render below clears and rebuilds the scene.
         state.coordinate_systems.clear()
-        for obj in center_points_objects:
-            try:
-                display.Context.Erase(obj, True)
-            except Exception:
-                pass
         center_points_objects.clear()
 
         from OCC.Core.BRepGProp import brepgprop
@@ -710,17 +1030,14 @@ def get_centers(event=None):
                 state.face_centers.append(center)
                 state.face_normals.append(normal)
 
-                obj = display.DisplayShape(center, color=CENTER, update=False)
-                if obj:
-                    center_points_objects.append(obj)
-                tri = display_coordinate_system(display, center, normal, size=50.0)
-                if tri:
-                    state.coordinate_systems.append(tri)
             except Exception as e:
                 print("Error calculating patch center: {}".format(str(e)))
 
-        display.FitAll()
+        if render:
+            _do_render()
         print("Centers calculated: {}".format(len(state.face_centers)))
+        _record_operation("calculate_centers", summary="{} centers".format(
+            len(state.face_centers)))
         _update_workflow(tr(
             "message.centers.complete", count=len(state.face_centers)))
     except Exception as e:
@@ -733,6 +1050,7 @@ def generate_center_viewpoints(event=None):
         show_topmost_message(tr("common.prompt"), tr("message.require.segment"))
         return
     try:
+        state.invalidate_after_viewpoints()
         state.view_points.clear()
         state.center_view_points.clear()
         state.center_view_points_with_pose.clear()
@@ -740,18 +1058,14 @@ def generate_center_viewpoints(event=None):
         state.center_viewpoint_records.clear()
         state.optimal_viewpoint_records.clear()
 
-        for obj in normal_line_objects:
-            try:
-                display.Context.Erase(obj, True)
-            except Exception:
-                pass
         normal_line_objects.clear()
 
         if not state.face_centers:
-            get_centers()
+            get_centers(render=False)
 
         center_vps, center_vps_with_pose, line_objs = build_center_viewpoints(
-            display, state.current_faces, state.face_centers, state.face_normals)
+            display, state.current_faces, state.face_centers, state.face_normals,
+            render=False)
 
         state.center_view_points = center_vps
         state.view_points = list(center_vps)
@@ -764,8 +1078,10 @@ def generate_center_viewpoints(event=None):
         ]
         normal_line_objects.extend(line_objs)
 
-        display.FitAll()
+        _do_render()
         print("Center viewpoints generated: {}".format(len(center_vps)))
+        _record_operation("generate_center_viewpoints",
+                          summary="{} viewpoints".format(len(center_vps)))
         _update_workflow(tr(
             "message.center_viewpoints.complete", count=len(center_vps)))
     except Exception as e:
@@ -778,6 +1094,7 @@ def generate_candidate_viewpoints(event=None):
         show_topmost_message(tr("common.prompt"), tr("message.require.segment"))
         return
     try:
+        state.invalidate_after_viewpoints()
         state.view_points.clear()
         state.center_view_points.clear()
         state.center_view_points_with_pose.clear()
@@ -786,19 +1103,15 @@ def generate_candidate_viewpoints(event=None):
         state.center_viewpoint_records.clear()
         state.optimal_viewpoint_records.clear()
 
-        for obj in normal_line_objects:
-            try:
-                display.Context.Erase(obj, True)
-            except Exception:
-                pass
         normal_line_objects.clear()
 
         if not state.face_centers:
-            get_centers()
+            get_centers(render=False)
 
         all_vps, all_vps_with_pose, center_vps, line_objs, coord_sys = (
             build_candidate_viewpoints(
-                display, state.current_faces, state.face_centers, state.face_normals))
+                display, state.current_faces, state.face_centers, state.face_normals,
+                render=False))
 
         state.view_points = all_vps
         state.center_view_points = center_vps
@@ -812,9 +1125,14 @@ def generate_candidate_viewpoints(event=None):
         normal_line_objects.extend(line_objs)
         state.coordinate_systems.extend(coord_sys)
 
-        display.FitAll()
+        _do_render()
         print("Candidate viewpoints generated: {} (including {} centres)".format(
             len(all_vps), len(center_vps)))
+        _record_operation("generate_candidate_viewpoints", {
+            "candidates_per_face": NUM_CANDIDATES_PER_FACE,
+            "viewpoint_distance": VIEWPOINT_DISTANCE,
+            "zenith_angle_deg": ZENITH_ANGLE_DEG,
+        }, summary="{} viewpoints".format(len(all_vps)))
         _update_workflow(tr(
             "message.candidate_viewpoints.complete", count=len(all_vps)))
     except Exception as e:
@@ -830,6 +1148,7 @@ def filter_optimal_viewpoints(event=None):
         show_topmost_message(tr("common.prompt"), tr("message.require.centers"))
         return
     try:
+        state.invalidate_after_optimal_viewpoints()
         state.optimal_viewpoints.clear()
         state.optimal_viewpoints_with_pose.clear()
         state.optimal_viewpoint_records.clear()
@@ -883,13 +1202,10 @@ def filter_optimal_viewpoints(event=None):
             state.optimal_viewpoints_with_pose.append((best_vp, best_pose))
             state.optimal_viewpoint_records.append(best_record)
 
-        # Display optimal viewpoints in the scene's shared green.
-        for vp in state.optimal_viewpoints:
-            sphere = BRepPrimAPI_MakeSphere(vp, 5.0).Shape()
-            display.DisplayShape(sphere, color=OPTIMAL, update=False)
-
-        display.FitAll()
+        _do_render()
         print("Optimal viewpoints filtered: {}".format(len(state.optimal_viewpoints)))
+        _record_operation("filter_optimal_viewpoints",
+                          summary="{} selected".format(len(state.optimal_viewpoints)))
         _update_workflow(tr(
             "message.optimal_viewpoints.complete",
             count=len(state.optimal_viewpoints)))
@@ -910,12 +1226,21 @@ def toggle_collision_detection(event=None):
         tr("menu.collision_detection"),
         tr("message.collision.toggle", state=status))
     print("Collision detection: {}".format(status))
+    _record_operation("set_collision_detection", {
+        "enabled": collision_detection_enabled})
 
 
 def set_sensor_parameters(event=None):
     result = get_sensor_parameters_dialog(current_config=state.sensor_size_config)
     if result is not None:
         state.sensor_size_config.update(result)
+        state.sensor_volumes_list.clear()
+        state.sensor_volume_objects.clear()
+        state.collision_results.clear()
+        state.sensor_volumes_created = False
+        state.collision_detection_executed = False
+        _do_render(fit_all=False)
+        _record_operation("set_sensor_parameters", result)
         message = tr(
             "message.sensor.updated", width=result['width'],
             height=result['height'], depth=result['depth'])
@@ -964,6 +1289,10 @@ def create_sensor_volumes_ui(event=None):
 
         display.Repaint()
         state.sensor_volumes_created = True
+        state.collision_results.clear()
+        state.collision_detection_executed = False
+        _record_operation("create_sensor_volumes", state.sensor_size_config,
+                          summary="{} volumes".format(created))
         print("Sensor volumes created: {}".format(created))
         message = tr("message.sensor_volumes.complete", count=created)
         _update_workflow(message)
@@ -1005,6 +1334,10 @@ def generate_min_bounding_boxes(event=None):
 
         display.Repaint()
         state.obb_boxes_generated = True
+        state.collision_results.clear()
+        state.collision_detection_executed = False
+        _record_operation("generate_obb_boxes",
+                          summary="{} boxes".format(len(state.face_obbs)))
         print("OBB boxes generated: {}".format(len(state.face_obbs)))
         message = tr("message.obb.complete", count=len(state.face_obbs))
         _update_workflow(message)
@@ -1058,12 +1391,17 @@ def execute_collision_detection(event=None):
 
         if state.face_obbs and state.sensor_volumes_list:
             results = check_collision_sweep(state.face_obbs, state.sensor_volumes_list)
+            state.collision_results = list(results)
             summary = summarize_collision_results(results)
             message = tr(
                 "message.collision.complete", collisions=summary.collisions,
                 total=summary.total)
             show_topmost_message(tr("menu.collision_detection"), message)
             state.collision_detection_executed = True
+            _record_operation("execute_collision_detection", {
+                "enabled": collision_detection_enabled},
+                summary="{} / {} collisions".format(
+                    summary.collisions, summary.total))
             _update_workflow(message)
         else:
             show_topmost_message(
@@ -1127,10 +1465,14 @@ def connect_sequentially(event=None):
             return
         state.optimal_path = list(range(n))
         state.last_path_algorithm = "sequential"
+        state.path_algorithm_diagnostics = {"algorithm": "sequential"}
         dist_matrix = build_distance_matrix(state.optimal_viewpoints)
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         total = calculate_path_length(state.optimal_path, dist_matrix)
         state.last_path_length = total
+        state.algorithm_parameters["path"] = {"algorithm": "sequential"}
+        _record_operation("plan_path", state.algorithm_parameters["path"],
+                          summary="length {:.3f} mm".format(total))
         display.FitAll()
         message = tr("message.path.sequential_complete", length=total)
         _update_workflow(message)
@@ -1151,9 +1493,13 @@ def solve_with_greedy_algorithm(event=None):
         _delete_existing_path()
         state.optimal_path, dist_matrix = solve_greedy_open_path(state.optimal_viewpoints)
         state.last_path_algorithm = "greedy"
+        state.path_algorithm_diagnostics = {"algorithm": "greedy"}
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         total = calculate_path_length(state.optimal_path, dist_matrix)
         state.last_path_length = total
+        state.algorithm_parameters["path"] = {"algorithm": "greedy"}
+        _record_operation("plan_path", state.algorithm_parameters["path"],
+                          summary="length {:.3f} mm".format(total))
         display.FitAll()
         message = tr("message.path.greedy_complete", length=total)
         _update_workflow(message)
@@ -1177,13 +1523,19 @@ def solve_with_abc_algorithm(event=None):
         return
 
     _delete_existing_path()
+    state.algorithm_parameters["path"] = dict(
+        vars(DEFAULT_ABC_CONFIG), algorithm="abc")
     abc_points = np.array([[p.X(), p.Y(), p.Z()] for p in state.optimal_viewpoints])
     set_status_message(tr("message.path.abc_running"))
 
     def on_success(result):
         state.optimal_path = list(result["best_tour"])
         state.last_path_algorithm = "abc"
+        state.path_algorithm_diagnostics = {
+            key: value for key, value in result.items() if key != "best_tour"}
         state.last_path_length = result["best_length"]
+        _record_operation("plan_path", state.algorithm_parameters["path"],
+                          summary="length {:.3f} mm".format(result["best_length"]))
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         display.FitAll()
         display.Repaint()
@@ -1217,12 +1569,18 @@ def solve_with_mscga_algorithm(event=None):
         return
 
     _delete_existing_path()
+    state.algorithm_parameters["path"] = dict(
+        vars(DEFAULT_MSCGA_CONFIG), algorithm="mscga", closed_tour=False)
     set_status_message(tr("message.path.mscga_running"))
 
     def on_success(result):
         state.optimal_path = list(result["best_tour"])
         state.last_path_algorithm = "mscga"
+        state.path_algorithm_diagnostics = {
+            key: value for key, value in result.items() if key != "best_tour"}
         state.last_path_length = result["best_length"]
+        _record_operation("plan_path", state.algorithm_parameters["path"],
+                          summary="length {:.3f} mm".format(result["best_length"]))
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         display.FitAll()
         display.Repaint()
@@ -1251,9 +1609,13 @@ def plan_path(event=None):
         _delete_existing_path()
         state.optimal_path, dist_matrix = solve_greedy_open_path(state.optimal_viewpoints)
         state.last_path_algorithm = "greedy"
+        state.path_algorithm_diagnostics = {"algorithm": "greedy"}
         draw_path_edges(display, state.optimal_path, state.optimal_viewpoints, state.optimal_path_objects)
         total = calculate_path_length(state.optimal_path, dist_matrix)
         state.last_path_length = total
+        state.algorithm_parameters["path"] = {"algorithm": "greedy"}
+        _record_operation("plan_path", state.algorithm_parameters["path"],
+                          summary="length {:.3f} mm".format(total))
         display.FitAll()
         _update_workflow(tr("message.path.complete", length=total))
     except Exception as e:
@@ -1279,6 +1641,8 @@ def export_path_to_csv(event=None):
             return
 
         count = write_path_pose_csv(file_path, state.optimal_viewpoints_with_pose, state.optimal_path)
+        _record_operation("export_path", {"path": file_path},
+                          summary="{} rows".format(count))
         _update_workflow(tr("message.export.path_complete", path=file_path))
         print("Path points exported to CSV: {}".format(file_path))
     except Exception as e:
@@ -1303,6 +1667,11 @@ def _activate_extrinsic_config(config, file_path):
     state.last_speed_csv_path = ""
     state.last_robodk_import.clear()
     state.last_reachability_report.clear()
+    _record_operation("load_calibration", {
+        "config_id": config.config_id,
+        "calibration_status": config.calibration_status,
+        "mapping_mode": config.mapping_mode,
+    }, summary=os.path.basename(file_path))
 
 
 def load_scanner_tool_extrinsic(event=None):
@@ -1388,6 +1757,7 @@ def clear_scanner_tool_extrinsic(event=None):
     state.last_speed_csv_path = ""
     state.last_robodk_import.clear()
     state.last_reachability_report.clear()
+    _record_operation("clear_calibration")
     _update_workflow(tr("message.extrinsic.cleared_status"))
     show_topmost_message(
         tr("dialog.extrinsic.title"),
@@ -1469,6 +1839,8 @@ def import_planned_path_to_robodk(event=None):
 
     def on_success(summary):
         state.last_robodk_import = summary
+        _record_operation("import_path_to_robodk", settings,
+                          summary=summary.get("program", ""))
         message = tr(
             "message.robodk.complete",
             program=summary["program"],
@@ -1542,6 +1914,9 @@ def analyze_planned_path_reachability(event=None):
         report["source_pose_records"] = pose_metadata.get(
             "source_pose_records", records)
         state.last_reachability_report = report
+        _record_operation("analyze_robodk_reachability", settings,
+                          summary="{} reachable, {} unreachable".format(
+                              report["reachable_count"], report["unreachable_count"]))
         available = ", ".join(
             str(index) for index in report["reachable_indices"]
         ) or tr("common.none")
@@ -1583,7 +1958,8 @@ def plan_path_speeds(event=None):
     if not state.optimal_path or not state.optimal_viewpoints_with_pose:
         show_topmost_message(tr("common.prompt"), tr("message.require.path"))
         return
-    settings = get_speed_planning_settings(get_main_window())
+    settings = get_speed_planning_settings(
+        get_main_window(), current=state.algorithm_parameters.get("speed"))
     if not settings:
         return
     algorithm = settings.pop("algorithm")
@@ -1610,6 +1986,11 @@ def plan_path_speeds(event=None):
 
     def on_success(result):
         state.speed_plan_result = result
+        state.algorithm_parameters["speed"] = dict(
+            vars(profile), algorithm=algorithm)
+        _record_operation("plan_speed", state.algorithm_parameters["speed"],
+                          summary="{} points, {:.3f} s".format(
+                              len(result.points), result.total_time))
         state.last_speed_csv_path = ""
         state.last_robodk_import.clear()
         message = tr(
@@ -1728,6 +2109,8 @@ def repair_ur10_reachability_failures(event=None):
             report = dict(payload["report"])
             report["path_signature"] = initial_signature
             state.last_reachability_report = report
+            _record_operation("repair_robodk_reachability", settings,
+                              summary="no failures")
             show_topmost_message(
                 tr("dialog.robodk.reachability_repair_title"),
                 tr("message.robodk.reachability_repair_no_failures"),
@@ -1737,6 +2120,8 @@ def repair_ur10_reachability_failures(event=None):
         repair_result = payload["result"]
         if not repair_result.replacements:
             state.last_reachability_report = dict(repair_result.final_report)
+            _record_operation("repair_robodk_reachability", settings,
+                              summary="no replacement found")
             show_topmost_message(
                 tr("dialog.robodk.reachability_repair_title"),
                 tr("message.robodk.reachability_repair_none",
@@ -1756,6 +2141,9 @@ def repair_ur10_reachability_failures(event=None):
         final_report["path_signature"] = compute_path_signature(
             repair_result.final_source_records, state.optimal_path, pose_metadata)
         state.last_reachability_report = final_report
+        _record_operation("repair_robodk_reachability", settings,
+                          summary="{} replacements".format(
+                              len(repair_result.replacements)))
 
         replaced = len(repair_result.replacements)
         unrepaired = ", ".join(str(i) for i in repair_result.unrepaired_indices) or tr("common.none")
@@ -1802,6 +2190,8 @@ def export_speed_plan_to_csv(event=None):
     try:
         count = write_speed_plan_csv(file_path, state.speed_plan_result)
         state.last_speed_csv_path = file_path
+        _record_operation("export_speed_plan", {"path": file_path},
+                          summary="{} rows".format(count))
         message = tr("message.export.speed_complete", path=file_path)
         _update_workflow(message)
         show_topmost_message(
@@ -1840,6 +2230,8 @@ def import_speed_plan_to_robodk(event=None):
 
     def on_success(summary):
         state.last_robodk_import = summary
+        _record_operation("import_speed_plan_to_robodk", settings,
+                          summary=summary.get("program", ""))
         message = tr(
             "message.robodk.complete", program=summary["program"],
             poses=summary["pose_count"],
@@ -1872,6 +2264,8 @@ def _toggle_flag(flag_name, layer_key, required_condition=True, prompt_key=None)
         return
     current = getattr(state, flag_name)
     setattr(state, flag_name, not current)
+    _record_operation("set_layer_visibility", {
+        "layer": layer_key, "visible": not current})
     action = tr("common.shown") if not current else tr("common.hidden")
     _do_render()
     set_status_message(tr(
@@ -1937,6 +2331,9 @@ def create_layer_panel_ui(event=None):
         "obb_boxes": toggle_obb_boxes,
     })
 
+def create_operation_panel_ui(event=None):
+    create_operation_panel(state)
+
 
 # ---------------------------------------------------------------------------
 # 14. Entry point
@@ -1953,6 +2350,11 @@ Usage Instructions:
   5. Use Inspection and speed for collision checks and speed planning
   6. Use RoboDK and export for calibration, reachability and transfer
   7. Use View and settings for layers, language, command size and help
+  8. Use Model -> Workstation -> Archives -> Save Workstation to preserve the session
+  9. Load a validated T_tool_scanner from 'Calibration' before production import
+  10. Check UR10 reachability using the current RoboDK robot model
+  11. After path ordering, use 'Speed Planning' to plan constrained per-pose speeds
+  12. Export Pose+Speed CSV or import Set Speed -> Move pairs to RoboDK
 """
 
 
@@ -1965,10 +2367,25 @@ def run():
 
     apply_application_theme(QtCore, QtGui, QtWidgets, get_main_window())
     configure_viewer(display)
-    configure_viewer(display)
 
     # Menu IDs are stable; visible labels are read from the active JSON catalog.
     _add_translated_menu("File", "menu.file")
+    action = _add_translated_action("File", new_workstation,
+                                    "action.new_workstation")
+    if action is not None:
+        action.setShortcut("Ctrl+N")
+    action = _add_translated_action("File", open_workstation,
+                                    "action.open_workstation")
+    if action is not None:
+        action.setShortcut("Ctrl+O")
+    action = _add_translated_action("File", save_workstation_ui,
+                                    "action.save_workstation")
+    if action is not None:
+        action.setShortcut("Ctrl+S")
+    action = _add_translated_action("File", save_workstation_as_ui,
+                                    "action.save_workstation_as")
+    if action is not None:
+        action.setShortcut("Ctrl+Shift+S")
     _add_translated_action("File", import_model, "action.import_model")
     _add_translated_action("File", clear_model, "action.clear_model")
     _add_translated_action("File", exit_program, "action.exit_program")
@@ -2021,6 +2438,8 @@ def run():
                            "action.create_workflow_panel")
     _add_translated_action("View", create_layer_panel_ui,
                            "action.create_layer_panel")
+    _add_translated_action("View", create_operation_panel_ui,
+                           "action.create_operation_panel")
 
     # Path Planning menu
     _add_translated_menu("Path Planning", "menu.path_planning")
@@ -2076,6 +2495,8 @@ def run():
                            "action.create_workflow_panel")
     _add_translated_action("Help", create_layer_panel_ui,
                            "action.create_layer_panel")
+    _add_translated_action("Help", create_operation_panel_ui,
+                           "action.create_operation_panel")
     _add_translated_action("Help", show_usage_instructions, "action.show_usage")
 
     actions_by_key = {
@@ -2095,14 +2516,16 @@ def run():
     # Create panels by default
     create_workflow_panel_ui()
     create_layer_panel_ui()
+    create_operation_panel_ui()
     _retranslate_main_ui()
+    _update_window_title()
 
-    # Accept one local STEP/IGES model dropped directly on the 3D canvas.
+    # Accept one local STEP/IGES model or .swstation on the 3D canvas.
     window = get_main_window()
     viewer = getattr(window, "canva", None) if window is not None else None
     if viewer is not None:
         install_model_drop_support(
-            QtCore, viewer, import_model_from_path,
+            QtCore, viewer, open_dropped_file,
             show_error=lambda message: show_topmost_message(
                 tr("file.import_model.title"), message, type="error"),
             set_status=set_status_message,

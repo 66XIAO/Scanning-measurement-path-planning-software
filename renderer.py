@@ -5,12 +5,16 @@ through one code-path instead of duplicating the display calls.
 """
 
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+from OCC.Core.BRep import BRep_Builder
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeSphere
 from OCC.Core.gp import gp_Pnt
+from OCC.Core.TopoDS import TopoDS_Compound
 from OCC.Display.OCCViewer import rgb_color
 from OCC.Core.Graphic3d import Graphic3d_NOM_SATIN
 from scene_style import MODEL, PATCHES, SELECTED, CENTER, CANDIDATE, OPTIMAL, PATH, SENSOR
+from OCC.Extend.TopologyUtils import TopologyExplorer
 from dataclasses import dataclass
+import OCC
 
 from geometry import (
     ConvertBndToShape,
@@ -20,6 +24,11 @@ from geometry import (
 )
 from config import NUM_CANDIDATES_PER_FACE
 from surface_segmentation import is_surface_patch
+from workers import supports_background_occ_objects
+
+
+LEGACY_OCC_SAFE_RENDERING = not supports_background_occ_objects(
+    getattr(OCC, "VERSION", "unknown"))
 
 
 # ---------------------------------------------------------------------------
@@ -46,21 +55,51 @@ class RenderRequest:
 
 
 def clear_interactive_selection(display):
-    """Release OCCT selection owners before removing displayed AIS shapes."""
-    context = getattr(display, "Context", None)
-    if context is not None:
-        for name in ("UnhilightSelected", "ClearSelected", "ClearDetected"):
-            method = getattr(context, name, None)
-            if method is not None:
-                try:
-                    method(False)
-                except (TypeError, AttributeError):
-                    pass
+    """Release AIS selection owners before changing the displayed scene.
+
+    pythonOCC 7.4 keeps the owner produced by ``Display3d.Select`` in the
+    interactive context. Erasing that owner while it is still selected can
+    access-violate inside ``AIS_InteractiveContext.EraseAll``.
+    """
+    context = display.Context
+    try:
+        context.Deactivate()
+    except Exception:
+        pass
+    try:
+        context.UnhilightSelected(False)
+    except Exception:
+        pass
+    try:
+        context.ClearSelected(False)
+    except Exception:
+        pass
+    try:
+        context.ClearDetected(False)
+    except Exception:
+        pass
+    # OCCViewer also retains the TopoDS wrappers returned by Select().
+    if hasattr(display, "selected_shapes"):
+        display.selected_shapes = []
 
 
-def erase_scene_safely(display):
+def erase_all_safely(display):
+    """Clear selection ownership before delegating to OCCViewer.EraseAll."""
     clear_interactive_selection(display)
     display.EraseAll()
+
+
+def _build_patch_edge_compound(patches):
+    """Build one wireframe shape without asking the viewer to mesh each face."""
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    edge_count = 0
+    for patch in patches:
+        for edge in TopologyExplorer(patch).edges():
+            builder.Add(compound, edge)
+            edge_count += 1
+    return compound, edge_count
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +125,7 @@ def render_scene(display, vis, current_shape, current_faces,
     Display-handle collections are updated in place.
     """
     try:
-        erase_scene_safely(display)
+        erase_all_safely(display)
         workpiece_coordinate_system_objects.clear()
         coordinate_systems.clear()
         optimal_path_objects.clear()
@@ -105,6 +144,22 @@ def render_scene(display, vis, current_shape, current_faces,
                         if is_surface_patch(patch):
                             display.DisplayShape(
                                 patch.center, color=colors[i % len(colors)], update=False)
+                elif LEGACY_OCC_SAFE_RENDERING:
+                    # OCCT 7.4 can calculate valid BOP faces but may access-
+                    # violate in TKV3d while the viewer triangulates dozens of
+                    # those faces individually. Keep the exact patches in
+                    # application state and render their shared boundaries over
+                    # the stable imported shape instead.
+                    display.DisplayShape(
+                        current_shape, color=MODEL,
+                        material=Graphic3d_NOM_SATIN,
+                        transparency=0.25, update=False)
+                    boundary_shape, edge_count = _build_patch_edge_compound(
+                        current_faces)
+                    if edge_count:
+                        display.DisplayShape(
+                            boundary_shape, color=CANDIDATE,
+                            update=False)
                 else:
                     for i, face in enumerate(current_faces):
                         display.DisplayShape(face, color=colors[i % len(colors)],
@@ -124,7 +179,8 @@ def render_scene(display, vis, current_shape, current_faces,
                 display.DisplayShape(center, color=CENTER, update=False)
                 if i < len(current_faces):
                     normal = face_normals[i] if i < len(face_normals) else calculate_face_normal(current_faces[i])
-                    tri = display_coordinate_system(display, center, normal, size=10.0)
+                    tri = display_coordinate_system(
+                        display, center, normal, size=10.0, update=False)
                     if tri:
                         coordinate_systems.append(tri)
 
@@ -142,7 +198,9 @@ def render_scene(display, vis, current_shape, current_faces,
                 display.DisplayShape(vp, color=CANDIDATE, update=False)
                 if i < len(current_faces) and i < len(face_centers):
                     normal = face_normals[i] if i < len(face_normals) else calculate_face_normal(current_faces[i])
-                    tri = display_coordinate_system(display, vp, normal, size=8.0, center=face_centers[i])
+                    tri = display_coordinate_system(
+                        display, vp, normal, size=8.0,
+                        center=face_centers[i], update=False)
                     if tri:
                         coordinate_systems.append(tri)
 
@@ -152,7 +210,9 @@ def render_scene(display, vis, current_shape, current_faces,
                 face_idx = (i - num_centers) // NUM_CANDIDATES_PER_FACE
                 if face_idx < len(current_faces) and face_idx < len(face_centers):
                     normal = face_normals[face_idx] if face_idx < len(face_normals) else calculate_face_normal(current_faces[face_idx])
-                    tri = display_coordinate_system(display, vp, normal, size=6.0, center=face_centers[face_idx])
+                    tri = display_coordinate_system(
+                        display, vp, normal, size=6.0,
+                        center=face_centers[face_idx], update=False)
                     if tri:
                         coordinate_systems.append(tri)
         elif vis.optimal_viewpoints:

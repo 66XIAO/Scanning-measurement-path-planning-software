@@ -257,6 +257,8 @@ _workflow_dock = None
 _workflow_status_label = None
 _workflow_cards = {}
 _workflow_groups = []
+_operation_dock = None
+_operation_text = None
 
 
 def create_workflow_panel():
@@ -329,6 +331,39 @@ def update_workflow_status(message=None, state=None):
             tr("workflow.selected_face", value=tr("common.yes") if snap.selected_face else tr("common.no")))
     if message:
         set_status_message(message)
+
+
+def create_operation_panel(state=None):
+    """Create a read-only operation-history panel."""
+    global _operation_dock, _operation_text
+    QtCore, QtWidgets = _get_qt()
+    main_window = get_main_window()
+    if not main_window or not hasattr(main_window, "addDockWidget"):
+        return
+    if _operation_dock is None:
+        _operation_dock = QtWidgets.QDockWidget(
+            tr("dock.operation_history.title"), main_window)
+        _operation_dock.setObjectName("OperationHistoryDock")
+        _operation_dock.setAllowedAreas(
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        _operation_text = QtWidgets.QPlainTextEdit()
+        _operation_text.setReadOnly(True)
+        _operation_text.setMinimumWidth(280)
+        _operation_dock.setWidget(_operation_text)
+        main_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, _operation_dock)
+    _operation_dock.show()
+    update_operation_panel(state)
+
+
+def update_operation_panel(state):
+    if _operation_text is None or state is None:
+        return
+    lines = []
+    for item in state.operation_history:
+        lines.append("{time} | {operation} | {status} | {summary}".format(
+            time=item.get("time", ""), operation=item.get("operation", ""),
+            status=item.get("status", ""), summary=item.get("summary", "")))
+    _operation_text.setPlainText("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +462,8 @@ def retranslate_panels(state=None):
         _workflow_dock.setWindowTitle(tr("dock.workflow.title"))
     if _layer_dock is not None:
         _layer_dock.setWindowTitle(tr("dock.layers.title"))
+    if _operation_dock is not None:
+        _operation_dock.setWindowTitle(tr("dock.operation_history.title"))
     for key, checkbox in _layer_checkboxes.items():
         checkbox.setText(tr("layer.short." + key))
         checkbox.setToolTip(tr("layer." + key))
@@ -442,7 +479,7 @@ def retranslate_panels(state=None):
 # Parameter dialogs
 # ---------------------------------------------------------------------------
 
-def get_user_segment_params(parent=None):
+def get_user_segment_params(parent=None, current=None):
     """Show a single dialog for U/V segmentation parameters.
 
     Returns
@@ -460,10 +497,11 @@ def get_user_segment_params(parent=None):
 
         u_spin = QtWidgets.QSpinBox()
         u_spin.setRange(1, 100)
-        u_spin.setValue(DEFAULT_SEGMENT_U)
+        current = current or {}
+        u_spin.setValue(int(current.get("u", DEFAULT_SEGMENT_U)))
         v_spin = QtWidgets.QSpinBox()
         v_spin.setRange(1, 100)
-        v_spin.setValue(DEFAULT_SEGMENT_V)
+        v_spin.setValue(int(current.get("v", DEFAULT_SEGMENT_V)))
 
         preview_label = QtWidgets.QLabel()
 

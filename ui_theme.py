@@ -7,6 +7,9 @@ from i18n import tr
 ASSET_ROOT = Path(__file__).resolve().parent / "assets"
 ICON_ROOT = ASSET_ROOT / "icons"
 ACTION_ICONS = {
+    "action.new_workstation": "clear", "action.open_workstation": "import-model",
+    "action.save_workstation": "export", "action.save_workstation_as": "export",
+    "action.create_operation_panel": "workflow",
     "action.import_model": "import-model", "action.clear_model": "clear",
     "action.exit_program": "exit", "action.select_single_face": "select-face",
     "action.segment_faces": "segment", "action.get_centers": "centers",
@@ -37,6 +40,7 @@ ACTION_ICONS = {
 }
 RIBBON_PAGES = (
     ("ribbon.model", (
+        ("ribbon.group.workstation", ("action.new_workstation", "action.open_workstation", "action.save_workstation", "action.save_workstation_as")),
         ("ribbon.group.file", ("action.import_model", "action.clear_model")),
         ("ribbon.group.surface", ("action.select_single_face", "action.segment_faces", "action.get_centers")))),
     ("ribbon.scan", (
@@ -50,12 +54,13 @@ RIBBON_PAGES = (
         ("ribbon.group.robot", ("action.analyze_ur10_reachability", "action.repair_ur10_reachability", "action.import_planned_path_robodk", "action.import_speed_plan_robodk")),
         ("ribbon.group.export", ("action.export_path_csv", "action.export_speed_plan_csv")))),
     ("ribbon.view", (
-        ("ribbon.group.panels", ("action.create_workflow_panel", "action.create_layer_panel")),
+        ("ribbon.group.panels", ("action.create_workflow_panel", "action.create_layer_panel", "action.create_operation_panel")),
         ("ribbon.group.layers", ("action.toggle_model_layer", "action.toggle_workpiece_coordinate_system", "action.toggle_face_centers", "action.toggle_normal_lines", "action.toggle_all_viewpoints", "action.toggle_optimal_viewpoints", "action.toggle_planned_path", "action.toggle_sensor_volumes", "action.toggle_obb_boxes")),
         ("ribbon.group.language", ("language.chinese", "language.english", "language.load_json", "action.show_usage", "action.exit_program")))),
 )
 SIZES = {"compact": (24, 9, 94), "standard": (32, 10, 110), "large": (40, 11, 126)}
 DROPDOWN_GROUPS = {
+    "ribbon.group.workstation": "ribbon.dropdown.workstation",
     "ribbon.group.layers": "ribbon.dropdown.layers",
     "ribbon.group.language": "ribbon.dropdown.language",
 }

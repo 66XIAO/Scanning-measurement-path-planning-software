@@ -22,16 +22,22 @@ def main_smoke():
         main.QtCore.QSettings.IniFormat,
         main.QtCore.QSettings.UserScope, str(output.resolve()))
     main.start_display = lambda: None
+    errors = []
+    def show_message(title, message, type="info"):
+        if type == "error":
+            errors.append(str(message))
+        return "yes" if type == "question" else None
+    main.show_topmost_message = show_message
+    # The smoke exercises scene transitions without interactive save prompts.
+    main._confirm_discard_or_save = lambda: True
     main.run()
     app = main.QtWidgets.QApplication.instance()
     window = main.get_main_window()
     window.show()
     app.processEvents()
-    shape = main.load_cad_shape(str(model))
-    main.state.current_shape = shape
-    main.state.workpiece_coordinate_system_size = main.calculate_workpiece_coordinate_size(shape)
-    main._do_render()
-    main._update_workflow()
+    main.import_model_from_path(str(model))
+    assert main.state.current_shape is not None
+    shape = main.state.current_shape
     ribbon = window.findChild(main.QtWidgets.QTabWidget, "CommandRibbon")
     assert ribbon is not None and ribbon.count() == 5
     assert window.menuBar().isHidden()
@@ -45,6 +51,11 @@ def main_smoke():
     menu_keys = {str(action.property("i18n_key")) for action in main._translated_actions}
     exposed_keys = {str(action.property("i18n_key")) for action in exposed}
     assert menu_keys <= exposed_keys
+    assert {
+        "action.new_workstation", "action.open_workstation",
+        "action.save_workstation", "action.save_workstation_as",
+        "action.create_operation_panel",
+    } <= exposed_keys
     window.resize(700, 600)
     ribbon.setCurrentIndex(4)
     app.processEvents()
@@ -118,7 +129,13 @@ def main_smoke():
     assert main.state.selected_face is not None
     main.select_single_face()
     assert len(main.display._select_callbacks) == 1
-    main._awaiting_face_selection = False
+    main.display.Context.MoveTo(center.x(), center.y(), main.display.View, True)
+    main.display.Select(center.x(), center.y())
+    app.processEvents()
+    assert main.state.selected_face is not None
+    assert not main._awaiting_face_selection
+    assert main.state.selected_face_source_index >= 0
+    native_selected_face = main.state.selected_face
     selected = output / "viewport_selected.png"
     main.display.View.Dump(str(selected))
     print(selected)
@@ -126,17 +143,44 @@ def main_smoke():
     main._do_render(fit_all=False)
     main.display.View.Dump(str(output / "viewport_unselected.png"))
     main.select_single_face()
-    main.select_face_clicked([faces.Current()], 0, 0)
-    main.get_user_segment_params = lambda: (2, 2)
-    main.show_topmost_message = lambda title, message, type="info": "yes" if type == "question" else None
+    main.select_face_clicked([native_selected_face], 0, 0)
+    u = int(sys.argv[4]) if len(sys.argv) > 4 else 2
+    v = int(sys.argv[5]) if len(sys.argv) > 5 else 2
+    main.get_user_segment_params = lambda **kwargs: (u, v)
     main.run_background_task = (
         lambda title, message, fn, on_success, on_error=None: on_success(fn()))
     main.segment_faces()
     assert main.state.current_faces and main.state.selected_face is None
+    print("Smoke segmentation: {} patches".format(len(main.state.current_faces)))
     main.display.View.Dump(str(output / "viewport_segmented.png"))
+    main.get_centers()
+    main.generate_center_viewpoints()
+    main.filter_optimal_viewpoints()
+    assert len(main.state.face_centers) == len(main.state.current_faces)
+    assert len(main.state.optimal_viewpoints) == len(main.state.current_faces)
+    archive = output / "smoke.swstation"
+    assert main._save_workstation_to(str(archive))
+    assert not main.state.workstation_dirty
+    patch_count = len(main.state.current_faces)
+    # Clearing an armed selection must also cancel its pending callback state.
+    main.select_single_face()
+    assert main._awaiting_face_selection
+    assert main.new_workstation()
+    assert main.state.current_shape is None and not main._awaiting_face_selection
+    assert main.open_dropped_file(str(archive))
+    assert len(main.state.current_faces) == patch_count
+    assert len(main.state.optimal_viewpoints) == patch_count
+    assert not main._awaiting_face_selection
+    assert main.state.model_source_path == str(model.resolve())
+    assert len(main.display._select_callbacks) == 1
+    main.create_operation_panel_ui()
+    app.processEvents()
+    window.grab().save(str(output / "ui_workstation.png"))
     main.clear_model()
     assert main.state.current_shape is None and main.state.selected_face is None
     main.display.View.Dump(str(output / "viewport_cleared.png"))
+    assert not errors, errors
+    print("Smoke passed: Ribbon, repeated native selection, segmentation, viewpoints, workstation round trip and clear")
     main._app_ready = False
     window.close()
 

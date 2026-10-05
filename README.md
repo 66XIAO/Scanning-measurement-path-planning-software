@@ -4,11 +4,38 @@
 
 A research-oriented desktop application for **CAD-based robotic scanning and measurement path planning**. The project integrates 3D model processing, surface segmentation, viewpoint generation, open-path optimization, speed planning, pose transformation, and RoboDK-based UR10 reachability analysis into a unified workflow.
 
-## Demo
+## Portable workstations
 
-![Software workflow demo](./docs/assets/software_demo.gif)
+Use **File > Save Workstation** (`Ctrl+S`) to save the current model, completed
+processing results, parameters, collision/path/speed data, calibration,
+visibility/camera state, and operation history to one `.swstation` file. Use
+`Ctrl+O` to reopen it and continue without rerunning completed algorithms. The
+archive can be moved and opened without the source STEP/IGES file. See
+[the workstation format and compatibility notes](docs/architecture/WORKSTATION_FORMAT.md).
+Workstation files can also be dragged directly onto the 3D viewer; the drop
+handler accepts `.swstation`, `.step`, `.stp`, `.iges`, and `.igs`.
 
-> The GIF above is an optimized preview generated from the full software recording supplied with the project.
+## Software Demonstration
+
+The following screenshots illustrate representative stages of the software workflow, including surface sampling/viewpoint generation and path-planning results under different segmentation settings.
+
+### 1. Surface sampling and viewpoint generation
+
+<p align="center">
+  <img src="docs/assets/readme/surface_sampling.png" alt="Surface sampling and viewpoint generation" width="600">
+</p>
+
+### 2. Path planning result with 93 segmented patches
+
+<p align="center">
+  <img src="docs/assets/readme/path_planning_93_patches.png" alt="Path planning result with 93 segmented patches" width="600">
+</p>
+
+### 3. Path planning result with 47 segmented patches
+
+<p align="center">
+  <img src="docs/assets/readme/path_planning_47_patches.png" alt="Path planning result with 47 segmented patches" width="600">
+</p>
 
 ## Main Capabilities
 
@@ -120,25 +147,15 @@ or
 .\run_integrated_app.ps1
 ```
 
-Check the local environment without opening the UI:
+The Python bootstrap can also be used when the required local environment is configured:
 
 ```powershell
-.\start_software.cmd --check
+python app_bootstrap.py
 ```
 
 ### Current environment notes
 
-The launcher discovers Conda from `PATH`, uses the `base` environment by default, and validates NumPy, PythonOCC, and PyQt5/PySide6 before opening the UI. To select another existing environment:
-
-```powershell
-$env:SCANNING_APP_CONDA_ENV = 'environment-name'
-.\start_software.cmd
-```
-
-The RoboDK Python API path is resolved from the ignored local configuration,
-`ROBODK_API_PATH`/`ROBODK_INSTALL_DIR`, PATH, the Windows registry, or standard
-operating-system installation directories. No machine-specific absolute path is
-stored in tracked source code.
+The checked-in `app_bootstrap.py` reflects the author's current development machine and contains default paths for the existing PythonOCC and RoboDK installations. These paths are **not portable defaults** and should be adapted to the local machine, preferably through the supported environment variables/configuration.
 
 See:
 
