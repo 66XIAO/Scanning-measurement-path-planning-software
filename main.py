@@ -92,6 +92,7 @@ from scene_style import ERROR, configure_viewer
 from workstation_io import (
     capture_workstation, load_workstation, save_workstation,
 )
+from ui_workspace import WorkspaceUI
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +164,8 @@ _language_subscription = None
 _face_callback_registered = False
 _awaiting_face_selection = False
 _workstation_io_active = False
+_workspace_ui = None
+_recent_workstations_menu = None
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +191,8 @@ class MainWindowCloseEvent(QtCore.QObject):
             if not proceed:
                 event.ignore()
                 return True
+            if _workspace_ui is not None:
+                _workspace_ui.save_layout()
         return super(MainWindowCloseEvent, self).eventFilter(obj, event)
 
 
@@ -317,6 +322,12 @@ def _retranslate_main_ui(_locale=None):
             action.setText(tr(str(translation_key)))
     retranslate_ribbon()
     retranslate_panels(state)
+    if _workspace_ui is not None:
+        _workspace_ui.refresh_favorites()
+        if _workspace_ui.search is not None:
+            _workspace_ui.search.setPlaceholderText(tr("ui.search.placeholder"))
+    if _recent_workstations_menu is not None:
+        _recent_workstations_menu.setTitle(tr("workstation.recent"))
 
 
 def switch_to_english(event=None):
@@ -521,6 +532,32 @@ def _workstation_busy():
     return bool(_workstation_io_active or task_runner.active_workers)
 
 
+def _remember_recent_workstation(path):
+    if _workspace_ui is None:
+        return
+    settings = _workspace_ui.settings
+    path = os.path.abspath(path)
+    previous = settings.value("recentWorkstations", [])
+    if isinstance(previous, str):
+        previous = [previous]
+    recent = [path] + [item for item in previous if item != path and os.path.isfile(item)]
+    settings.setValue("recentWorkstations", recent[:10])
+
+
+def _populate_recent_workstations(menu):
+    menu.clear()
+    previous = _workspace_ui.settings.value("recentWorkstations", [])
+    if isinstance(previous, str):
+        previous = [previous]
+    for path in previous:
+        if os.path.isfile(path):
+            action = menu.addAction(os.path.basename(path))
+            action.setToolTip(path)
+            action.triggered.connect(lambda checked=False, selected=path:
+                                     open_workstation_from_path(selected))
+    menu.setEnabled(bool(menu.actions()))
+
+
 def _confirm_discard_or_save():
     """Return True when a destructive lifecycle action may continue."""
     if _workstation_busy():
@@ -620,6 +657,7 @@ def _save_workstation_to(path):
         state.workstation_path = saved_path
         state.workstation_saved_at = manifest["saved_at"]
         state.workstation_dirty = False
+        _remember_recent_workstation(saved_path)
         _update_window_title()
         _update_workflow(tr("workstation.save.complete", filename=os.path.basename(saved_path)))
         return True
@@ -690,6 +728,7 @@ def open_workstation_from_path(path, confirm_changes=True):
                 tr("common.prompt"), "\n".join(
                     tr("workstation.warning." + warning)
                     for warning in candidate.warnings), type="warning")
+        _remember_recent_workstation(path)
         return True
     except Exception as exc:
         show_topmost_message(
@@ -2335,9 +2374,94 @@ def create_operation_panel_ui(event=None):
     create_operation_panel(state)
 
 
+def _toggle_panel(name, show_panel):
+    dock = get_main_window().findChild(QtWidgets.QDockWidget, name)
+    if dock is None or not dock.isVisible():
+        show_panel()
+    else:
+        dock.hide()
+
+
 # ---------------------------------------------------------------------------
 # 14. Entry point
 # ---------------------------------------------------------------------------
+
+def _run_ui_command(callback):
+    try:
+        callback()
+    except Exception as exc:
+        show_topmost_message(tr("common.error"), str(exc), type="error")
+
+
+def _show_ui_text(title_key, body):
+    dialog = QtWidgets.QDialog(get_main_window())
+    dialog.setWindowTitle(tr(title_key))
+    dialog.resize(640, 440)
+    layout = QtWidgets.QVBoxLayout(dialog)
+    editor = QtWidgets.QPlainTextEdit(dialog)
+    editor.setReadOnly(True)
+    editor.setPlainText(body)
+    layout.addWidget(editor)
+    buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    (getattr(dialog, "exec", None) or getattr(dialog, "exec_"))()
+
+
+def _show_shortcuts():
+    lines = ["{}: {}".format(action.shortcut().toString(), action.text())
+             for action in _workspace_ui.actions.values() if not action.shortcut().isEmpty()]
+    _show_ui_text("action.show_shortcuts", "\n".join(sorted(lines)))
+
+
+def _show_diagnostics():
+    import platform
+    lines = ["Python: " + sys.version.split()[0],
+             "pythonOCC: " + str(PYTHONOCC_VERSION),
+             "Qt: " + QtCore.QT_VERSION_STR,
+             "OS: " + platform.platform(),
+             "Model: " + (state.model_source_path or "-")]
+    _show_ui_text("action.show_diagnostics", "\n".join(lines))
+
+
+def _configure_shortcuts():
+    dialog = QtWidgets.QDialog(get_main_window())
+    dialog.setWindowTitle(tr("action.configure_shortcuts"))
+    dialog.resize(600, 500)
+    layout = QtWidgets.QVBoxLayout(dialog)
+    table = QtWidgets.QTableWidget(dialog)
+    actions = list(_workspace_ui.actions.values())
+    table.setColumnCount(2)
+    table.setHorizontalHeaderLabels([tr("ui.shortcut.command"), tr("ui.shortcut.keys")])
+    table.setRowCount(len(actions))
+    for row, action in enumerate(actions):
+        name = QtWidgets.QTableWidgetItem(action.text())
+        name.setFlags(name.flags() & ~QtCore.Qt.ItemIsEditable)
+        table.setItem(row, 0, name)
+        table.setItem(row, 1, QtWidgets.QTableWidgetItem(action.shortcut().toString()))
+    table.horizontalHeader().setStretchLastSection(True)
+    layout.addWidget(table)
+    buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok |
+                                          QtWidgets.QDialogButtonBox.Cancel)
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    if (getattr(dialog, "exec", None) or getattr(dialog, "exec_"))() != QtWidgets.QDialog.Accepted:
+        return
+    values = [table.item(row, 1).text().strip() for row in range(len(actions))]
+    sequences = [QtGui.QKeySequence(value) for value in values]
+    if any(value and sequence.isEmpty()
+           for value, sequence in zip(values, sequences)):
+        raise ValueError(tr("ui.shortcut.invalid"))
+    normalized = [sequence.toString() for sequence in sequences if not sequence.isEmpty()]
+    if len(normalized) != len(set(normalized)):
+        raise ValueError(tr("ui.shortcut.conflict"))
+    for action, sequence in zip(actions, sequences):
+        action.setShortcut(sequence)
+        key = action.property("i18n_key")
+        if key:
+            _workspace_ui.settings.setValue("shortcuts/" + str(key), sequence.toString())
+
 
 USAGE_TEXT_INLINE = """\
 Usage Instructions:
@@ -2345,12 +2469,12 @@ Usage Instructions:
   2. Please use functions in order:
      Import Model -> Segment Faces -> Get Centers -> Generate Viewpoints
      -> Filter Optimal Viewpoints -> Path Planning
-  3. Use Model for import, face selection and segmentation
-  4. Use Scan planning for viewpoint generation and path ordering
-  5. Use Inspection and speed for collision checks and speed planning
-  6. Use RoboDK and export for calibration, reachability and transfer
-  7. Use View and settings for layers, language, command size and help
-  8. Use Model -> Workstation -> Archives -> Save Workstation to preserve the session
+  3. Use File for workstation and CAD model operations
+  4. Use Path planning for segmentation, viewpoints, path and speed planning
+  5. Use Collision detection for sensor and bounding-box checks
+  6. Use Calibration and export for RoboDK, reachability and CSV
+  7. Use View, Settings and Help for the camera, panels and preferences
+  8. Use File -> Archives -> Save Workstation to preserve the session
   9. Load a validated T_tool_scanner from 'Calibration' before production import
   10. Check UR10 reachability using the current RoboDK robot model
   11. After path ordering, use 'Speed Planning' to plan constrained per-pose speeds
@@ -2359,13 +2483,15 @@ Usage Instructions:
 
 
 def run():
-    global _language_subscription
+    global _language_subscription, _workspace_ui, _recent_workstations_menu
     print("=== 3D Model Processing and Path Planning System ===")
     # Print usage to console instead of showing a blocking dialog at startup.
     # Users can access it later via Help -> show_usage_instructions.
     print(USAGE_TEXT_INLINE)
 
     apply_application_theme(QtCore, QtGui, QtWidgets, get_main_window())
+    if get_main_window() is not None:
+        get_main_window().setDockNestingEnabled(True)
     configure_viewer(display)
 
     # Menu IDs are stable; visible labels are read from the active JSON catalog.
@@ -2434,11 +2560,14 @@ def run():
     _add_translated_action("View", toggle_sensor_volumes,
                            "action.toggle_sensor_volumes")
     _add_translated_action("View", toggle_obb_boxes, "action.toggle_obb_boxes")
-    _add_translated_action("View", create_workflow_panel_ui,
+    _add_translated_action("View", lambda: _toggle_panel(
+        "WorkflowStatusDock", create_workflow_panel_ui),
                            "action.create_workflow_panel")
-    _add_translated_action("View", create_layer_panel_ui,
+    _add_translated_action("View", lambda: _toggle_panel(
+        "LayerControlDock", create_layer_panel_ui),
                            "action.create_layer_panel")
-    _add_translated_action("View", create_operation_panel_ui,
+    _add_translated_action("View", lambda: _toggle_panel(
+        "OperationHistoryDock", create_operation_panel_ui),
                            "action.create_operation_panel")
 
     # Path Planning menu
@@ -2491,13 +2620,58 @@ def run():
 
     # Help menu
     _add_translated_menu("Help", "menu.help")
-    _add_translated_action("Help", create_workflow_panel_ui,
+    _add_translated_action("Help", lambda: _toggle_panel(
+        "WorkflowStatusDock", create_workflow_panel_ui),
                            "action.create_workflow_panel")
-    _add_translated_action("Help", create_layer_panel_ui,
+    _add_translated_action("Help", lambda: _toggle_panel(
+        "LayerControlDock", create_layer_panel_ui),
                            "action.create_layer_panel")
-    _add_translated_action("Help", create_operation_panel_ui,
+    _add_translated_action("Help", lambda: _toggle_panel(
+        "OperationHistoryDock", create_operation_panel_ui),
                            "action.create_operation_panel")
     _add_translated_action("Help", show_usage_instructions, "action.show_usage")
+
+    # Keep a single QAction for each command; the menu is hidden and the
+    # ribbon, search and favorites all trigger these same actions.
+    for command in ("fit", "iso", "front", "back", "left", "right",
+                    "top", "bottom", "orthographic", "perspective",
+                    "shaded", "wireframe", "edges", "screenshot"):
+        _add_translated_action(
+            "View", lambda checked=False, name=command:
+            _run_ui_command(lambda: _workspace_ui.view(name)),
+            "action.view_" + command)
+    for key, method in (("action.default_layout", "default_layout"),
+                        ("action.focus_layout", "focus_layout"),
+                        ("action.toggle_fullscreen", "toggle_fullscreen"),
+                        ("action.save_named_layout", "save_named_layout"),
+                        ("action.restore_named_layout", "restore_named_layout"),
+                        ("action.delete_named_layout", "delete_named_layout")):
+        _add_translated_action("View", lambda checked=False, name=method:
+                               _run_ui_command(getattr(_workspace_ui, name)), key)
+    _add_translated_menu("Settings", "ribbon.settings")
+    _add_translated_action("Settings", lambda: _workspace_ui.configure_favorites(),
+                           "action.configure_favorites")
+    _add_translated_action("Settings", lambda: _run_ui_command(_configure_shortcuts),
+                           "action.configure_shortcuts")
+    _add_translated_action("Settings", lambda: _run_ui_command(
+        _workspace_ui.configure_robodk),
+        "action.configure_robodk")
+    _add_translated_action("Settings", lambda: _run_ui_command(
+        _workspace_ui.configure_colors), "action.configure_colors")
+    for key, method in (("action.export_ui_config", "export_config"),
+                        ("action.import_ui_config", "import_config"),
+                        ("action.reset_ui_config", "reset_config")):
+        _add_translated_action("Settings", lambda checked=False, name=method:
+                               _run_ui_command(getattr(_workspace_ui, name)), key)
+    _add_translated_action("Help", lambda: _show_ui_text(
+        "action.show_mouse_guide", tr("help.mouse_guide")),
+        "action.show_mouse_guide")
+    _add_translated_action("Help", _show_shortcuts, "action.show_shortcuts")
+    _add_translated_action("Help", _show_diagnostics, "action.show_diagnostics")
+    _add_translated_action("Help", lambda: _workspace_ui.show_help(),
+                           "action.search_help")
+    _add_translated_action("Help", lambda: _show_ui_text(
+        "action.show_about", tr("help.about")), "action.show_about")
 
     actions_by_key = {
         str(action.property("i18n_key")): action
@@ -2505,6 +2679,20 @@ def run():
         if action.property("i18n_key")
     }
     create_primary_toolbar(QtCore, QtWidgets, get_main_window(), actions_by_key)
+    _workspace_ui = WorkspaceUI(QtCore, QtGui, QtWidgets, get_main_window(),
+                                display, actions_by_key)
+    for key, action in actions_by_key.items():
+        saved_shortcut = _workspace_ui.settings.value("shortcuts/" + key)
+        if saved_shortcut is not None:
+            action.setShortcut(str(saved_shortcut))
+    ribbon = get_main_window().findChild(QtWidgets.QTabWidget, "CommandRibbon")
+    _workspace_ui.attach_header(ribbon)
+    archive_button = ribbon.findChild(QtWidgets.QToolButton,
+                                     "RibbonDropdown_ribbon.group.workstation")
+    if archive_button is not None:
+        recent_menu = archive_button.menu().addMenu(tr("workstation.recent"))
+        recent_menu.aboutToShow.connect(lambda: _populate_recent_workstations(recent_menu))
+        _recent_workstations_menu = recent_menu
 
     if _language_subscription is None:
         _language_subscription = subscribe_language_changed(_retranslate_main_ui)
@@ -2517,6 +2705,21 @@ def run():
     create_workflow_panel_ui()
     create_layer_panel_ui()
     create_operation_panel_ui()
+    if not _workspace_ui.settings.contains("dockState"):
+        get_main_window().findChild(QtWidgets.QDockWidget,
+                                    "OperationHistoryDock").hide()
+    _workspace_ui.remember_default_layout()
+    for key, dock_name in (("action.create_workflow_panel", "WorkflowStatusDock"),
+                           ("action.create_layer_panel", "LayerControlDock"),
+                           ("action.create_operation_panel", "OperationHistoryDock")):
+        dock = get_main_window().findChild(QtWidgets.QDockWidget, dock_name)
+        related = [item for item in _translated_actions
+                   if item.property("i18n_key") == key]
+        for item in related:
+            item.setCheckable(True)
+            item.setChecked(dock.isVisible())
+        dock.visibilityChanged.connect(
+            lambda visible, group=related: [item.setChecked(visible) for item in group])
     _retranslate_main_ui()
     _update_window_title()
 

@@ -259,14 +259,37 @@ _workflow_cards = {}
 _workflow_groups = []
 _operation_dock = None
 _operation_text = None
+_operation_filter = None
+_operation_rows = []
+_operation_buttons = {}
+
+
+def apply_panel_scheme(scheme, surface_color="", text_color=""):
+    variants = {
+        "light": ("#F7FAFC", "#E7F2F9", "#263238", "#D4DCE3"),
+        "dark": ("#34424C", "#35536A", "#EBF3F8", "#526371"),
+        "high_contrast": ("#000000", "#202020", "#FFFFFF", "#FFFFFF"),
+    }
+    background, hover, foreground, border = variants.get(scheme, variants["light"])
+    if surface_color:
+        background = surface_color
+    if text_color:
+        foreground = text_color
+    style = ("QToolButton {{ text-align: left; background: {0}; color: {2}; "
+             "border: 1px solid {3}; border-radius: 6px; padding: 8px; }} "
+             "QToolButton:hover {{ background: {1}; }}").format(
+                 background, hover, foreground, border)
+    for card in _workflow_cards.values():
+        card.setStyleSheet(style)
 
 
 def create_workflow_panel():
-    """Create (or show) a right-side workflow panel."""
+    """Create (or show) the left-side workflow panel."""
     global _workflow_dock, _workflow_status_label, _workflow_cards
 
     if _workflow_dock is not None:
-        update_workflow_status(tr("workflow.panel_exists"))
+        _workflow_dock.show()
+        _workflow_dock.raise_()
         return
 
     QtCore, QtWidgets = _get_qt()
@@ -291,7 +314,9 @@ def create_workflow_panel():
         card.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         card.setMinimumHeight(54)
         card.setStyleSheet("QToolButton { text-align: left; background: #F7FAFC; border: 1px solid #D4DCE3; border-radius: 6px; padding: 8px; } QToolButton:hover { background: #E7F2F9; border-color: #8BBEDC; }")
-        destination = (0, 1, 1, 2, 3)[index]
+        destination = ("ribbon.file", "ribbon.path_planning",
+                       "ribbon.path_planning", "ribbon.collision",
+                       "ribbon.calibration_export")[index]
         from ui_theme import ribbon_page
         card.clicked.connect(lambda checked=False, page=destination: ribbon_page(page))
         _workflow_cards[key] = card
@@ -306,9 +331,12 @@ def create_workflow_panel():
     scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
     scroll.setWidget(panel)
     _workflow_dock.setWidget(scroll)
-    _workflow_dock.setMinimumWidth(265)
-    main_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, _workflow_dock)
-    main_window.resizeDocks([_workflow_dock], [300], QtCore.Qt.Horizontal)
+    _workflow_dock.setMinimumWidth(210)
+    main_window.addDockWidget(QtCore.Qt.LeftDockWidgetArea, _workflow_dock)
+    main_window.resizeDocks([_workflow_dock], [240], QtCore.Qt.Horizontal)
+    settings = QtCore.QSettings(QtCore.QSettings.IniFormat, QtCore.QSettings.UserScope,
+                                "ScanningPathPlanner", "UI")
+    apply_panel_scheme(str(settings.value("colorScheme", "light")))
     update_workflow_status(tr("common.ready"))
 
 
@@ -334,8 +362,8 @@ def update_workflow_status(message=None, state=None):
 
 
 def create_operation_panel(state=None):
-    """Create a read-only operation-history panel."""
-    global _operation_dock, _operation_text
+    """Create a read-only operation-history panel at the bottom."""
+    global _operation_dock, _operation_text, _operation_filter
     QtCore, QtWidgets = _get_qt()
     main_window = get_main_window()
     if not main_window or not hasattr(main_window, "addDockWidget"):
@@ -344,26 +372,92 @@ def create_operation_panel(state=None):
         _operation_dock = QtWidgets.QDockWidget(
             tr("dock.operation_history.title"), main_window)
         _operation_dock.setObjectName("OperationHistoryDock")
-        _operation_dock.setAllowedAreas(
-            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
-        _operation_text = QtWidgets.QPlainTextEdit()
-        _operation_text.setReadOnly(True)
-        _operation_text.setMinimumWidth(280)
-        _operation_dock.setWidget(_operation_text)
-        main_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, _operation_dock)
+        _operation_dock.setAllowedAreas(QtCore.Qt.BottomDockWidgetArea |
+                                        QtCore.Qt.TopDockWidgetArea)
+        panel = QtWidgets.QWidget(_operation_dock)
+        column = QtWidgets.QVBoxLayout(panel)
+        column.setContentsMargins(4, 4, 4, 4)
+        controls = QtWidgets.QHBoxLayout()
+        _operation_filter = QtWidgets.QLineEdit(panel)
+        _operation_filter.setPlaceholderText(tr("operation.filter"))
+        _operation_filter.textChanged.connect(lambda: _refresh_operation_rows())
+        controls.addWidget(_operation_filter, 1)
+        _operation_text = QtWidgets.QTreeWidget(panel)
+        _operation_text.setObjectName("OperationHistoryTable")
+        _operation_text.setColumnCount(4)
+        _operation_text.setHeaderLabels([tr("operation.time"), tr("operation.category"),
+                                         tr("operation.result"), tr("operation.detail")])
+        _operation_text.setRootIsDecorated(False)
+        _operation_text.setAlternatingRowColors(True)
+        column.addLayout(controls)
+        column.addWidget(_operation_text)
+        for key, handler in (("operation.copy", _copy_operation_rows),
+                             ("operation.export", _export_operation_rows),
+                             ("operation.clear_display", _clear_operation_display)):
+            button = QtWidgets.QPushButton(tr(key), panel)
+            button.clicked.connect(handler)
+            controls.addWidget(button)
+            _operation_buttons[key] = button
+        _operation_dock.setWidget(panel)
+        main_window.addDockWidget(QtCore.Qt.BottomDockWidgetArea, _operation_dock)
+        main_window.resizeDocks([_operation_dock], [180], QtCore.Qt.Vertical)
     _operation_dock.show()
+    _operation_dock.raise_()
     update_operation_panel(state)
 
 
 def update_operation_panel(state):
     if _operation_text is None or state is None:
         return
-    lines = []
-    for item in state.operation_history:
-        lines.append("{time} | {operation} | {status} | {summary}".format(
-            time=item.get("time", ""), operation=item.get("operation", ""),
-            status=item.get("status", ""), summary=item.get("summary", "")))
-    _operation_text.setPlainText("\n".join(lines))
+    global _operation_rows
+    _operation_rows = list(state.operation_history)
+    _refresh_operation_rows()
+
+
+def _refresh_operation_rows():
+    if _operation_text is None:
+        return
+    import json
+    needle = _operation_filter.text().strip().casefold() if _operation_filter else ""
+    _operation_text.clear()
+    for record in _operation_rows:
+        details = record.get("summary", "")
+        parameters = record.get("parameters", {})
+        if parameters:
+            details += "  " + json.dumps(parameters, ensure_ascii=False, default=str)
+        values = (record.get("time", ""), record.get("operation", ""),
+                  record.get("status", ""), details)
+        if needle and needle not in " ".join(values).casefold():
+            continue
+        _, widgets = _get_qt()
+        widgets.QTreeWidgetItem(_operation_text.invisibleRootItem(), values)
+    for column in (0, 1, 2):
+        _operation_text.resizeColumnToContents(column)
+
+
+def _operation_lines():
+    return ["\t".join(_operation_text.topLevelItem(i).text(j) for j in range(4))
+            for i in range(_operation_text.topLevelItemCount())]
+
+
+def _copy_operation_rows():
+    _, QtWidgets = _get_qt()
+    QtWidgets.QApplication.clipboard().setText("\n".join(_operation_lines()))
+
+
+def _export_operation_rows():
+    _, QtWidgets = _get_qt()
+    path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        get_main_window(), tr("operation.export"), "operation-log.tsv", "TSV (*.tsv)")
+    if path:
+        from pathlib import Path
+        Path(path).write_text("\n".join(_operation_lines()), encoding="utf-8")
+
+
+def _clear_operation_display():
+    # The workstation history stays intact; a later state update can show it again.
+    _operation_rows.clear()
+    _refresh_operation_rows()
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +480,8 @@ def create_layer_panel(toggle_callbacks):
     global _layer_dock, _layer_checkboxes, _layer_groups
 
     if _layer_dock is not None:
+        _layer_dock.show()
+        _layer_dock.raise_()
         return
 
     QtCore, QtWidgets = _get_qt()
@@ -439,10 +535,9 @@ def create_layer_panel(toggle_callbacks):
     scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
     scroll.setWidget(panel)
     _layer_dock.setWidget(scroll)
-    _layer_dock.setMinimumWidth(265)
+    _layer_dock.setMinimumWidth(210)
     main_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, _layer_dock)
-    if _workflow_dock is not None:
-        main_window.splitDockWidget(_workflow_dock, _layer_dock, QtCore.Qt.Vertical)
+    main_window.resizeDocks([_layer_dock], [260], QtCore.Qt.Horizontal)
 
 
 def sync_layer_panel(vis_flags):
@@ -464,6 +559,13 @@ def retranslate_panels(state=None):
         _layer_dock.setWindowTitle(tr("dock.layers.title"))
     if _operation_dock is not None:
         _operation_dock.setWindowTitle(tr("dock.operation_history.title"))
+    if _operation_filter is not None:
+        _operation_filter.setPlaceholderText(tr("operation.filter"))
+    if _operation_text is not None:
+        _operation_text.setHeaderLabels([tr("operation.time"), tr("operation.category"),
+                                         tr("operation.result"), tr("operation.detail")])
+    for key, button in _operation_buttons.items():
+        button.setText(tr(key))
     for key, checkbox in _layer_checkboxes.items():
         checkbox.setText(tr("layer.short." + key))
         checkbox.setToolTip(tr("layer." + key))

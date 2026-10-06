@@ -1,6 +1,8 @@
 """Visual smoke capture for the integrated command UI with a real CAD model."""
 import os
 import sys
+import json
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +41,7 @@ def main_smoke():
     assert main.state.current_shape is not None
     shape = main.state.current_shape
     ribbon = window.findChild(main.QtWidgets.QTabWidget, "CommandRibbon")
-    assert ribbon is not None and ribbon.count() == 5
+    assert ribbon is not None and ribbon.count() == 7
     assert window.menuBar().isHidden()
     assert len(window.findChildren(main.QtWidgets.QToolButton)) >= 30
     exposed = set()
@@ -56,14 +58,85 @@ def main_smoke():
         "action.save_workstation", "action.save_workstation_as",
         "action.create_operation_panel",
     } <= exposed_keys
+    assert [ribbon.tabText(i) for i in range(7)] == [
+        "File", "Path planning", "Collision detection",
+        "Calibration and export", "View", "Settings", "Help"]
+    for size_name in ("compact", "standard", "large"):
+        set_ribbon_size(size_name)
+        for language, switch in (("en", main.switch_to_english),
+                                 ("zh", main.switch_to_chinese)):
+            switch()
+            window.resize(1366, 768)
+            for index in range(7):
+                ribbon.setCurrentIndex(index)
+                app.processEvents()
+                for button in ribbon.widget(index).findChildren(main.QtWidgets.QToolButton):
+                    if button.defaultAction() is not None:
+                        assert button.width() >= button.fontMetrics().horizontalAdvance(
+                            button.text()) + 20, button.text()
+                window.grab().save(str(output / ("tab_{}_{}_{}.png".format(
+                    size_name, language, index))))
+    main.switch_to_english()
+    for scheme in ("light", "dark", "high_contrast"):
+        main._workspace_ui.settings.setValue("colorScheme", scheme)
+        main.apply_application_theme(main.QtCore, main.QtGui, main.QtWidgets, window)
+        app.processEvents()
+        window.grab().save(str(output / ("scheme_" + scheme + ".png")))
+    main._workspace_ui.settings.setValue("colorScheme", "light")
+    main.apply_application_theme(main.QtCore, main.QtGui, main.QtWidgets, window)
+    workflow = window.findChild(main.QtWidgets.QDockWidget, "WorkflowStatusDock")
+    workflow.hide()
+    app.processEvents()
+    assert not workflow.isVisible()
+    main._workspace_ui.actions["action.create_workflow_panel"].trigger()
+    app.processEvents()
+    assert workflow.isVisible()
+    preferences_file = output / "preferences.json"
+    with mock.patch.object(main.QtWidgets.QFileDialog, "getSaveFileName",
+                           return_value=(str(preferences_file), "JSON (*.json)")):
+        main._workspace_ui.export_config()
+    exported = json.loads(preferences_file.read_text(encoding="utf-8"))
+    assert exported["version"] == 1
+    assert "recentWorkstations" not in exported and "model_source_path" not in exported
+    main._workspace_ui.settings.setValue("favorites", [])
+    with mock.patch.object(main.QtWidgets.QFileDialog, "getOpenFileName",
+                           return_value=(str(preferences_file), "JSON (*.json)")), \
+         mock.patch.object(main.QtWidgets.QMessageBox, "question",
+                           return_value=main.QtWidgets.QMessageBox.Ok):
+        main._workspace_ui.import_config()
+    assert main._workspace_ui.favorites() == exported["favorites"]
+    assert main.state.current_shape is shape
+    invalid = output / "invalid-preferences.json"
+    invalid.write_text(json.dumps({"version": 99, "favorites": []}), encoding="utf-8")
+    with mock.patch.object(main.QtWidgets.QFileDialog, "getOpenFileName",
+                           return_value=(str(invalid), "JSON (*.json)")):
+        try:
+            main._workspace_ui.import_config()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Unsupported UI config version was accepted")
+    assert main._workspace_ui.favorites() == exported["favorites"]
+    for command in ("fit", "iso", "front", "back", "left", "right",
+                    "top", "bottom", "orthographic", "perspective",
+                    "wireframe", "shaded", "edges"):
+        main._workspace_ui.view(command)
+        main.display.View.Dump(str(output / ("view_command_" + command + ".png")))
+    main._workspace_ui.view("iso")
+    search = window.findChild(main.QtWidgets.QLineEdit, "CommandSearch")
+    assert search is not None
+    search.setText("segment")
+    assert "segment" in search.text()
+    search.clear()
     window.resize(700, 600)
     ribbon.setCurrentIndex(4)
     app.processEvents()
     assert ribbon.widget(4).horizontalScrollBar().maximum() > 0
-    ribbon.cornerWidget().click()
+    collapse = ribbon.findChild(main.QtWidgets.QToolButton, "RibbonCollapse")
+    collapse.click()
     app.processEvents()
     assert ribbon.property("collapsed") == True
-    ribbon.cornerWidget().click()
+    collapse.click()
     app.processEvents()
     assert ribbon.property("collapsed") == False
     window.findChild(main.QtWidgets.QToolButton, "WorkflowCard_model").click()
@@ -74,11 +147,8 @@ def main_smoke():
             main.QtCore.QSettings.IniFormat, main.QtCore.QSettings.UserScope,
             "ScanningPathPlanner", "UI").value("ribbonSize"))
         assert stored_size == size
-        if size == "large":
-            window.showMaximized()
-        else:
-            window.showNormal()
-            window.resize(width, height)
+        window.showNormal()
+        window.resize(width, height)
         app.processEvents()
         main.display.FitAll()
         main.display.Repaint()
@@ -103,7 +173,8 @@ def main_smoke():
     window.grab().save(str(output / "ui_view_controls.png"))
     ribbon.setCurrentIndex(0)
     main.switch_to_chinese()
-    assert ribbon.tabText(0) == "模型"
+    assert ribbon.tabText(0) == "文件"
+    assert ribbon.tabText(6) == "帮助"
     app.processEvents()
     chinese_capture = window.grab()
     canvas = getattr(window, "canva", None)
@@ -115,7 +186,7 @@ def main_smoke():
         painter.end()
     chinese_capture.save(str(output / "ui_chinese.png"))
     main.switch_to_english()
-    assert ribbon.tabText(0) == "Model"
+    assert ribbon.tabText(0) == "File"
     from OCC.Core.TopExp import TopExp_Explorer
     from OCC.Core.TopAbs import TopAbs_FACE
     faces = TopExp_Explorer(shape, TopAbs_FACE)
@@ -175,6 +246,11 @@ def main_smoke():
     assert len(main.display._select_callbacks) == 1
     main.create_operation_panel_ui()
     app.processEvents()
+    from ui_panels import _clear_operation_display
+    history_count = len(main.state.operation_history)
+    _clear_operation_display()
+    assert len(main.state.operation_history) == history_count
+    main.update_operation_panel(main.state)
     window.grab().save(str(output / "ui_workstation.png"))
     main.clear_model()
     assert main.state.current_shape is None and main.state.selected_face is None
