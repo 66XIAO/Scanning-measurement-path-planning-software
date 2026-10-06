@@ -21,6 +21,7 @@ ACTION_ICONS = {
     "action.execute_collision_detection": "collision",
     "action.demo_collision_detection": "collision", "action.toggle_model_layer": "layers",
     "action.toggle_workpiece_coordinate_system": "axes",
+    "action.configure_local_frames": "axes",
     "action.toggle_face_centers": "centers", "action.toggle_normal_lines": "normals",
     "action.toggle_all_viewpoints": "viewpoints",
     "action.toggle_optimal_viewpoints": "optimize", "action.toggle_planned_path": "path",
@@ -75,7 +76,7 @@ RIBBON_PAGES = (
         ("ribbon.group.export", ("action.export_path_csv", "action.export_speed_plan_csv")))),
     ("ribbon.view", (
         ("ribbon.group.camera", ("action.view_fit", "action.view_iso", "action.view_front", "action.view_back", "action.view_left", "action.view_right", "action.view_top", "action.view_bottom")),
-        ("ribbon.group.display", ("action.view_orthographic", "action.view_perspective", "action.view_shaded", "action.view_wireframe", "action.view_edges", "action.view_screenshot")),
+        ("ribbon.group.display", ("action.view_orthographic", "action.view_perspective", "action.view_shaded", "action.view_wireframe", "action.view_edges", "action.view_screenshot", "action.configure_local_frames")),
         ("ribbon.group.panels", ("action.create_workflow_panel", "action.create_layer_panel", "action.create_operation_panel")),
         ("ribbon.group.layout", ("action.default_layout", "action.focus_layout", "action.toggle_fullscreen", "action.save_named_layout", "action.restore_named_layout", "action.delete_named_layout")),
         ("ribbon.group.layers", ("action.toggle_model_layer", "action.toggle_workpiece_coordinate_system", "action.toggle_face_centers", "action.toggle_normal_lines", "action.toggle_all_viewpoints", "action.toggle_optimal_viewpoints", "action.toggle_planned_path", "action.toggle_sensor_volumes", "action.toggle_obb_boxes")))),
@@ -309,7 +310,7 @@ def create_primary_toolbar(QtCore, QtWidgets, window, actions):
     toolbar.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
     window.addToolBar(QtCore.Qt.TopToolBarArea, toolbar)
     window.menuBar().hide()
-    _ribbon = {"tabs": tabs, "groups": group_titles, "buttons": buttons,
+    _ribbon = {"toolbar": toolbar, "tabs": tabs, "groups": group_titles, "buttons": buttons,
                "dropdowns": dropdowns,
                "settings": settings, "QtCore": QtCore, "collapse": collapse}
     set_ribbon_size(size)
@@ -343,6 +344,19 @@ def ribbon_page(index):
             index = next((i for i, page in enumerate(RIBBON_PAGES)
                           if page[0] == index), 0)
         _ribbon["tabs"].setCurrentIndex(index)
+
+
+def ensure_primary_ribbon_visible(window, expand=False):
+    """Keep the sole command surface reachable after any saved Qt layout."""
+    if _ribbon is None or window is None:
+        return
+    QtCore = _ribbon["QtCore"]
+    toolbar = _ribbon["toolbar"]
+    window.addToolBar(QtCore.Qt.TopToolBarArea, toolbar)
+    toolbar.show()
+    if expand and _ribbon["tabs"].property("collapsed") == True:
+        _ribbon["collapse"].click()
+    _ribbon["tabs"].show()
 
 
 def retranslate_ribbon():

@@ -93,6 +93,7 @@ from workstation_io import (
     capture_workstation, load_workstation, save_workstation,
 )
 from ui_workspace import WorkspaceUI
+from local_frame_style import read_local_frame_style
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +245,7 @@ def _do_render(fit_all=True):
         state.sensor_volume_objects, state.obb_visualizations,
         fit_all=fit_all,
         selected_face=state.selected_face,
+        local_frame_style=read_local_frame_style(_workspace_ui.settings),
     )
 
 
@@ -2409,7 +2411,8 @@ def _show_ui_text(title_key, body):
 
 
 def _show_shortcuts():
-    lines = ["{}: {}".format(action.shortcut().toString(), action.text())
+    lines = ["Ctrl+Shift+0: " + tr("action.default_layout")]
+    lines += ["{}: {}".format(action.shortcut().toString(), action.text())
              for action in _workspace_ui.actions.values() if not action.shortcut().isEmpty()]
     _show_ui_text("action.show_shortcuts", "\n".join(sorted(lines)))
 
@@ -2454,7 +2457,7 @@ def _configure_shortcuts():
            for value, sequence in zip(values, sequences)):
         raise ValueError(tr("ui.shortcut.invalid"))
     normalized = [sequence.toString() for sequence in sequences if not sequence.isEmpty()]
-    if len(normalized) != len(set(normalized)):
+    if len(normalized) != len(set(normalized)) or "Ctrl+Shift+0" in normalized:
         raise ValueError(tr("ui.shortcut.conflict"))
     for action, sequence in zip(actions, sequences):
         action.setShortcut(sequence)
@@ -2648,6 +2651,10 @@ def run():
                         ("action.delete_named_layout", "delete_named_layout")):
         _add_translated_action("View", lambda checked=False, name=method:
                                _run_ui_command(getattr(_workspace_ui, name)), key)
+    _add_translated_action(
+        "View", lambda: _run_ui_command(lambda:
+            _workspace_ui.configure_local_frames(lambda: _do_render(fit_all=False))),
+        "action.configure_local_frames")
     _add_translated_menu("Settings", "ribbon.settings")
     _add_translated_action("Settings", lambda: _workspace_ui.configure_favorites(),
                            "action.configure_favorites")
@@ -2681,6 +2688,7 @@ def run():
     create_primary_toolbar(QtCore, QtWidgets, get_main_window(), actions_by_key)
     _workspace_ui = WorkspaceUI(QtCore, QtGui, QtWidgets, get_main_window(),
                                 display, actions_by_key)
+    _workspace_ui.redraw_scene = lambda: _do_render(fit_all=False)
     for key, action in actions_by_key.items():
         saved_shortcut = _workspace_ui.settings.value("shortcuts/" + key)
         if saved_shortcut is not None:

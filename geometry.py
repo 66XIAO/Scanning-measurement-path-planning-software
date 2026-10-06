@@ -22,6 +22,7 @@ from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.Geom import Geom_Axis2Placement
 from OCC.Core.AIS import AIS_Trihedron
+from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCC.Display.OCCViewer import rgb_color
 
 from surface_segmentation import (
@@ -227,7 +228,7 @@ def display_workpiece_coordinate_system(display, shape=None, size=None):
         return None
 
 def display_coordinate_system(display, position, normal, size=50.0, center=None,
-                              update=True):
+                              update=True, style=None):
     """Display a small trihedron at *position* and return its AIS handle.
 
     Parameters
@@ -248,6 +249,23 @@ def display_coordinate_system(display, position, normal, size=50.0, center=None,
         axis_placement = Geom_Axis2Placement(ax2)
         trihedron = AIS_Trihedron(axis_placement)
         trihedron.SetSize(size)
+        if style is not None:
+            # Own the aspect: mutating a linked default drawer would recolor
+            # every trihedron, including the CAD-global frame.
+            attributes = trihedron.Attributes()
+            attributes.SetOwnDatumAspects()
+            datum = attributes.DatumAspect()
+            datum.SetToDrawLabels(bool(style["labels_visible"]))
+            text = datum.TextAspect()
+            text.SetHeight(float(style["label_height"]))
+            if style["label_font"]:
+                text.SetFont(style["label_font"])
+            rgb = style["label_color"].lstrip("#")
+            trihedron.SetTextColor(Quantity_Color(
+                int(rgb[0:2], 16) / 255.0,
+                int(rgb[2:4], 16) / 255.0,
+                int(rgb[4:6], 16) / 255.0,
+                Quantity_TOC_RGB))
 
         ctx = display.Context
         ctx.SetAutoActivateSelection(False)

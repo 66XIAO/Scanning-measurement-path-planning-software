@@ -5,6 +5,9 @@ import tempfile
 from pathlib import Path
 
 from i18n import tr
+from local_frame_style import (DEFAULT_LOCAL_FRAME_STYLE,
+                               normalize_local_frame_style,
+                               read_local_frame_style, write_local_frame_style)
 
 CONFIG_VERSION = 1
 DEFAULT_FAVORITES = ["action.import_model", "action.save_workstation",
@@ -35,7 +38,11 @@ class WorkspaceUI:
                                          "ScanningPathPlanner", "UI")
         self.search = None
         self.favorites_button = None
-        self._default_state = None
+        self.redraw_scene = None
+        self.recovery_shortcut = QtWidgets.QShortcut(
+            QtGui.QKeySequence("Ctrl+Shift+0"), window)
+        self.recovery_shortcut.setContext(QtCore.Qt.ApplicationShortcut)
+        self.recovery_shortcut.activated.connect(self.default_layout)
 
     def favorites(self):
         keys = self.settings.value("favorites", DEFAULT_FAVORITES)
@@ -136,6 +143,7 @@ class WorkspaceUI:
         content = "\n\n".join((tr("help.usage_text"),
                                   tr("help.mouse_guide"),
                                   tr("help.about"),
+                                  "Ctrl+Shift+0 — " + tr("action.default_layout"),
                                   "\n".join("{} — {}".format(
                                       action.shortcut().toString(), action.text())
                                       for action in self.actions.values()
@@ -280,6 +288,89 @@ class WorkspaceUI:
             field.setText(color.name())
             preview()
 
+    def configure_local_frames(self, redraw):
+        original = read_local_frame_style(self.settings)
+        dialog = self.QtWidgets.QDialog(self.window)
+        dialog.setWindowTitle(tr("action.configure_local_frames"))
+        form = self.QtWidgets.QFormLayout(dialog)
+        sizes = {}
+        for key in ("face_center_size", "center_view_size", "candidate_view_size"):
+            spin = self.QtWidgets.QDoubleSpinBox(dialog)
+            spin.setRange(0.1, 100000.0)
+            spin.setDecimals(1)
+            spin.setSuffix(" " + tr("ui.local_frames.model_units"))
+            spin.setValue(original[key])
+            form.addRow(tr("ui.local_frames." + key), spin)
+            sizes[key] = spin
+        labels = self.QtWidgets.QCheckBox(tr("ui.local_frames.labels_visible"), dialog)
+        labels.setChecked(original["labels_visible"])
+        form.addRow(labels)
+        height = self.QtWidgets.QDoubleSpinBox(dialog)
+        height.setRange(6.0, 48.0)
+        height.setDecimals(1)
+        height.setValue(original["label_height"])
+        form.addRow(tr("ui.local_frames.label_height"), height)
+        color = self.QtWidgets.QLineEdit(original["label_color"], dialog)
+        choose = self.QtWidgets.QPushButton("…", dialog)
+        choose.clicked.connect(lambda: self._pick_color(color, lambda: None))
+        row = self.QtWidgets.QWidget(dialog)
+        line = self.QtWidgets.QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.addWidget(color)
+        line.addWidget(choose)
+        form.addRow(tr("ui.local_frames.label_color"), row)
+        font = self.QtWidgets.QLineEdit(original["label_font"], dialog)
+        font.setPlaceholderText(tr("ui.local_frames.default_font"))
+        form.addRow(tr("ui.local_frames.label_font"), font)
+        buttons = self.QtWidgets.QDialogButtonBox(
+            self.QtWidgets.QDialogButtonBox.Ok |
+            self.QtWidgets.QDialogButtonBox.Cancel |
+            self.QtWidgets.QDialogButtonBox.Apply |
+            self.QtWidgets.QDialogButtonBox.RestoreDefaults, dialog)
+        form.addRow(buttons)
+
+        def values():
+            return normalize_local_frame_style({
+                **{key: widget.value() for key, widget in sizes.items()},
+                "labels_visible": labels.isChecked(),
+                "label_height": height.value(),
+                "label_color": color.text().strip(),
+                "label_font": font.text().strip(),
+            })
+
+        def apply():
+            try:
+                write_local_frame_style(self.settings, values())
+            except (TypeError, ValueError):
+                self.QtWidgets.QMessageBox.warning(
+                    dialog, tr("action.configure_local_frames"),
+                    tr("ui.local_frames.invalid_color"))
+                return False
+            redraw()
+            return True
+
+        def accept():
+            if apply():
+                dialog.accept()
+
+        def restore_defaults():
+            for key, widget in sizes.items():
+                widget.setValue(DEFAULT_LOCAL_FRAME_STYLE[key])
+            labels.setChecked(DEFAULT_LOCAL_FRAME_STYLE["labels_visible"])
+            height.setValue(DEFAULT_LOCAL_FRAME_STYLE["label_height"])
+            color.setText(DEFAULT_LOCAL_FRAME_STYLE["label_color"])
+            font.clear()
+
+        buttons.accepted.connect(accept)
+        buttons.rejected.connect(dialog.reject)
+        buttons.button(self.QtWidgets.QDialogButtonBox.Apply).clicked.connect(apply)
+        buttons.button(self.QtWidgets.QDialogButtonBox.RestoreDefaults).clicked.connect(
+            restore_defaults)
+        (getattr(dialog, "exec", None) or getattr(dialog, "exec_"))()
+        if dialog.result() != self.QtWidgets.QDialog.Accepted:
+            write_local_frame_style(self.settings, original)
+            redraw()
+
     def view(self, command):
         if command == "fit":
             self.display.FitAll()
@@ -314,13 +405,15 @@ class WorkspaceUI:
         self.display.Repaint()
 
     def remember_default_layout(self):
-        self._default_state = self.window.saveState()
+        from ui_theme import ensure_primary_ribbon_visible
         geometry = self.settings.value("windowGeometry")
         state = self.settings.value("dockState")
         if geometry:
             self.window.restoreGeometry(geometry)
         if state:
-            self.window.restoreState(state)
+            if not self.window.restoreState(state):
+                self.default_layout()
+        ensure_primary_ribbon_visible(self.window)
         screens = self.QtWidgets.QApplication.screens()
         if screens and not any(screen.availableGeometry().intersects(self.window.frameGeometry())
                                for screen in screens):
@@ -330,13 +423,34 @@ class WorkspaceUI:
             self.window.move(available.topLeft())
 
     def save_layout(self):
+        from ui_theme import ensure_primary_ribbon_visible
+        ensure_primary_ribbon_visible(self.window)
         self.settings.setValue("windowGeometry", self.window.saveGeometry())
         self.settings.setValue("dockState", self.window.saveState())
         self.settings.sync()
 
     def default_layout(self):
-        if self._default_state is not None:
-            self.window.restoreState(self._default_state)
+        from ui_theme import ensure_primary_ribbon_visible
+        if self.window.isFullScreen():
+            self.window.showNormal()
+        docks = (("WorkflowStatusDock", self.QtCore.Qt.LeftDockWidgetArea, True),
+                 ("LayerControlDock", self.QtCore.Qt.RightDockWidgetArea, True),
+                 ("OperationHistoryDock", self.QtCore.Qt.BottomDockWidgetArea, False))
+        for name, area, visible in docks:
+            dock = self.window.findChild(self.QtWidgets.QDockWidget, name)
+            if dock is None:
+                continue
+            if dock.isFloating():
+                dock.setFloating(False)
+            self.window.addDockWidget(area, dock)
+            dock.setVisible(visible)
+        left = self.window.findChild(self.QtWidgets.QDockWidget, "WorkflowStatusDock")
+        right = self.window.findChild(self.QtWidgets.QDockWidget, "LayerControlDock")
+        if left is not None:
+            self.window.resizeDocks([left], [240], self.QtCore.Qt.Horizontal)
+        if right is not None:
+            self.window.resizeDocks([right], [260], self.QtCore.Qt.Horizontal)
+        ensure_primary_ribbon_visible(self.window, expand=True)
 
     def focus_layout(self):
         for name in ("WorkflowStatusDock", "LayerControlDock", "OperationHistoryDock"):
@@ -366,7 +480,9 @@ class WorkspaceUI:
             self.window, tr("action.restore_named_layout"), tr("ui.layout.name"),
             names, 0, False)
         if accepted and name:
+            from ui_theme import ensure_primary_ribbon_visible
             self.window.restoreState(self.settings.value("layouts/" + name))
+            ensure_primary_ribbon_visible(self.window)
 
     def delete_named_layout(self):
         self.settings.beginGroup("layouts")
@@ -390,6 +506,7 @@ class WorkspaceUI:
                     "colorScheme": str(self.settings.value("colorScheme", "light")),
                     "colors": {key: str(self.settings.value(key, ""))
                                for key in ("accentColor", "surfaceColor", "textColor")},
+                    "localFrames": read_local_frame_style(self.settings),
                     "shortcuts": {key: action.shortcut().toString()
                                   for key, action in self.actions.items()},
                     "robodk": {key: str(self.settings.value("robodk/" + key, default))
@@ -427,6 +544,7 @@ class WorkspaceUI:
         colors = data.get("colors", {})
         shortcuts = data.get("shortcuts", {})
         robodk = data.get("robodk", {})
+        local_frames = normalize_local_frame_style(data.get("localFrames", {}))
         if (size not in ("compact", "standard", "large") or
                 scheme not in ("light", "dark", "high_contrast") or
                 not isinstance(keys, list) or not isinstance(colors, dict) or
@@ -450,7 +568,7 @@ class WorkspaceUI:
                                for key, action in self.actions.items()}
         effective_shortcuts.update(known_shortcuts)
         values = [value for value in effective_shortcuts.values() if value]
-        if len(values) != len(set(values)):
+        if len(values) != len(set(values)) or "Ctrl+Shift+0" in values:
             raise ValueError(tr("ui.shortcut.conflict"))
         if not all(isinstance(robodk.get(key, default), str) and
                    robodk.get(key, default).strip()
@@ -477,6 +595,8 @@ class WorkspaceUI:
         changes.update({"robodk/" + key: robodk[key]
                         for key in ("robot_name", "frame_name", "tool_name")
                         if key in robodk})
+        changes.update({"localFrames/" + key: value
+                        for key, value in local_frames.items()})
         old = {key: self.settings.value(key) for key in changes}
         old_shortcuts = {key: action.shortcut() for key, action in self.actions.items()}
         old_size = str(self.settings.value("ribbonSize", "standard"))
@@ -488,6 +608,8 @@ class WorkspaceUI:
                 self.actions[key].setShortcut(self.QtGui.QKeySequence(sequence))
             apply_application_theme(self.QtCore, self.QtGui, self.QtWidgets, self.window)
             self.refresh_favorites()
+            if self.redraw_scene:
+                self.redraw_scene()
             self.settings.sync()
         except Exception:
             for key, value in old.items():
@@ -506,13 +628,14 @@ class WorkspaceUI:
     def reset_config(self):
         for key in ("favorites", "ribbonSize", "windowGeometry", "dockState",
                     "colorScheme", "accentColor", "surfaceColor", "textColor",
-                    "shortcuts", "robodk", "layouts"):
+                    "shortcuts", "robodk", "layouts", "localFrames"):
             self.settings.remove(key)
         from ui_theme import set_ribbon_size, apply_application_theme
         set_ribbon_size("standard")
         for key, sequence in self.default_shortcuts.items():
             self.actions[key].setShortcut(self.QtGui.QKeySequence(sequence))
         apply_application_theme(self.QtCore, self.QtGui, self.QtWidgets, self.window)
-        if self._default_state is not None:
-            self.window.restoreState(self._default_state)
+        self.default_layout()
         self.refresh_favorites()
+        if self.redraw_scene:
+            self.redraw_scene()

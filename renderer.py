@@ -114,7 +114,7 @@ def render_scene(display, vis, current_shape, current_faces,
                  workpiece_coordinate_system_objects, coordinate_systems,
                  optimal_path_objects,
                  sensor_volume_objects, obb_visualizations,
-                 fit_all=True, selected_face=None):
+                 fit_all=True, selected_face=None, local_frame_style=None):
     """Redraw the entire scene from current state and visibility flags.
 
     All mutable collection handles are cleared and re-populated in-place so
@@ -180,7 +180,9 @@ def render_scene(display, vis, current_shape, current_faces,
                 if i < len(current_faces):
                     normal = face_normals[i] if i < len(face_normals) else calculate_face_normal(current_faces[i])
                     tri = display_coordinate_system(
-                        display, center, normal, size=10.0, update=False)
+                        display, center, normal,
+                        size=local_frame_style["face_center_size"] if local_frame_style else 10.0,
+                        update=False, style=local_frame_style)
                     if tri:
                         coordinate_systems.append(tri)
 
@@ -199,8 +201,9 @@ def render_scene(display, vis, current_shape, current_faces,
                 if i < len(current_faces) and i < len(face_centers):
                     normal = face_normals[i] if i < len(face_normals) else calculate_face_normal(current_faces[i])
                     tri = display_coordinate_system(
-                        display, vp, normal, size=8.0,
-                        center=face_centers[i], update=False)
+                        display, vp, normal,
+                        size=local_frame_style["center_view_size"] if local_frame_style else 8.0,
+                        center=face_centers[i], update=False, style=local_frame_style)
                     if tri:
                         coordinate_systems.append(tri)
 
@@ -211,8 +214,9 @@ def render_scene(display, vis, current_shape, current_faces,
                 if face_idx < len(current_faces) and face_idx < len(face_centers):
                     normal = face_normals[face_idx] if face_idx < len(face_normals) else calculate_face_normal(current_faces[face_idx])
                     tri = display_coordinate_system(
-                        display, vp, normal, size=6.0,
-                        center=face_centers[face_idx], update=False)
+                        display, vp, normal,
+                        size=local_frame_style["candidate_view_size"] if local_frame_style else 6.0,
+                        center=face_centers[face_idx], update=False, style=local_frame_style)
                     if tri:
                         coordinate_systems.append(tri)
         elif vis.optimal_viewpoints:

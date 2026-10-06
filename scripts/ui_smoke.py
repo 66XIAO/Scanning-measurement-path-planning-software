@@ -37,10 +37,67 @@ def main_smoke():
     window = main.get_main_window()
     window.show()
     app.processEvents()
+    primary_toolbar = window.findChild(main.QtWidgets.QToolBar, "PrimaryWorkflowToolbar")
+    assert primary_toolbar.isVisible()
+    main._workspace_ui.focus_layout()
+    app.processEvents()
+    main._workspace_ui.default_layout()
+    app.processEvents()
+    assert primary_toolbar.isVisible(), "Default layout hid the main Ribbon"
+    assert window.findChild(main.QtWidgets.QDockWidget, "WorkflowStatusDock").isVisible()
+    assert window.findChild(main.QtWidgets.QDockWidget, "LayerControlDock").isVisible()
+    # Simulate a legacy UI.ini state whose serialized toolbar visibility is off.
+    primary_toolbar.hide()
+    hidden_layout = window.saveState()
+    primary_toolbar.show()
+    main._workspace_ui.settings.setValue("dockState", hidden_layout)
+    main._workspace_ui.remember_default_layout()
+    app.processEvents()
+    assert primary_toolbar.isVisible(), "Restoring a saved layout hid the main Ribbon"
+    # Closing with a hidden toolbar must not persist the unusable state.
+    primary_toolbar.hide()
+    main._workspace_ui.save_layout()
+    assert primary_toolbar.isVisible()
+    window.restoreState(main._workspace_ui.settings.value("dockState"))
+    app.processEvents()
+    assert primary_toolbar.isVisible()
+    # Named layouts created by older versions need the same recovery guard.
+    main._workspace_ui.settings.setValue("layouts/legacy-hidden", hidden_layout)
+    with mock.patch.object(main.QtWidgets.QInputDialog, "getItem",
+                           return_value=("legacy-hidden", True)):
+        main._workspace_ui.restore_named_layout()
+    app.processEvents()
+    assert primary_toolbar.isVisible()
+    main._workspace_ui.default_layout()
+    primary_toolbar.hide()
+    main._workspace_ui.focus_layout()
+    from PyQt5.QtTest import QTest
+    QTest.keyClick(window, main.QtCore.Qt.Key_0,
+                   main.QtCore.Qt.ControlModifier | main.QtCore.Qt.ShiftModifier)
+    app.processEvents()
+    assert primary_toolbar.isVisible(), "Recovery shortcut did not restore the Ribbon"
+    assert window.findChild(main.QtWidgets.QDockWidget, "WorkflowStatusDock").isVisible()
+    ribbon = window.findChild(main.QtWidgets.QTabWidget, "CommandRibbon")
+    collapse = ribbon.findChild(main.QtWidgets.QToolButton, "RibbonCollapse")
+    collapse.click()
+    assert ribbon.property("collapsed") is True
+    main._workspace_ui.default_layout()
+    app.processEvents()
+    assert ribbon.property("collapsed") is False
+    workflow = window.findChild(main.QtWidgets.QDockWidget, "WorkflowStatusDock")
+    workflow.setFloating(True)
+    main._workspace_ui.default_layout()
+    app.processEvents()
+    assert not workflow.isFloating()
+    assert window.dockWidgetArea(workflow) == main.QtCore.Qt.LeftDockWidgetArea
+    main._workspace_ui.settings.setValue("dockState", b"invalid-dock-state")
+    main._workspace_ui.remember_default_layout()
+    app.processEvents()
+    assert primary_toolbar.isVisible() and workflow.isVisible()
+    assert window.findChild(main.QtWidgets.QDockWidget, "LayerControlDock").isVisible()
     main.import_model_from_path(str(model))
     assert main.state.current_shape is not None
     shape = main.state.current_shape
-    ribbon = window.findChild(main.QtWidgets.QTabWidget, "CommandRibbon")
     assert ribbon is not None and ribbon.count() == 7
     assert window.menuBar().isHidden()
     assert len(window.findChildren(main.QtWidgets.QToolButton)) >= 30
@@ -226,6 +283,42 @@ def main_smoke():
     main.display.View.Dump(str(output / "viewport_segmented.png"))
     main.get_centers()
     main.generate_center_viewpoints()
+    from local_frame_style import write_local_frame_style
+    write_local_frame_style(main._workspace_ui.settings, {
+        "face_center_size": 14.0,
+        "center_view_size": 9.0,
+        "candidate_view_size": 4.0,
+        "labels_visible": False,
+        "label_height": 14.0,
+        "label_color": "#40C0FF",
+        "label_font": "Arial",
+    })
+    main._do_render(fit_all=False)
+    frames = main.state.coordinate_systems
+    assert len(frames) == 2 * len(main.state.current_faces), len(frames)
+    assert all(frame.Size() == 14.0 for frame in frames[:len(main.state.current_faces)])
+    assert all(frame.Size() == 9.0 for frame in frames[len(main.state.current_faces):])
+    assert all(not frame.Attributes().DatumAspect().ToDrawLabels() for frame in frames)
+    assert all(frame.Attributes().DatumAspect().TextAspect().Height() == 14.0
+               for frame in frames)
+    main.display.View.Dump(str(output / "viewport_local_frames_no_labels.png"))
+    main.generate_candidate_viewpoints()
+    candidate_count = max(0, len(main.state.view_points) - len(main.state.face_centers))
+    assert candidate_count > 0
+    assert len(main.state.coordinate_systems) == 2 * len(main.state.face_centers) + candidate_count
+    assert all(frame.Size() == 4.0 for frame in main.state.coordinate_systems[-candidate_count:])
+    def edit_local_frame_dialog():
+        dialog = app.activeModalWidget()
+        assert dialog is not None
+        spins = dialog.findChildren(main.QtWidgets.QDoubleSpinBox)
+        spins[0].setValue(12.0)
+        dialog.findChild(main.QtWidgets.QCheckBox).setChecked(True)
+        box = dialog.findChild(main.QtWidgets.QDialogButtonBox)
+        box.button(main.QtWidgets.QDialogButtonBox.Ok).click()
+    main.QtCore.QTimer.singleShot(0, edit_local_frame_dialog)
+    main._workspace_ui.configure_local_frames(lambda: main._do_render(fit_all=False))
+    assert main.state.coordinate_systems[0].Size() == 12.0
+    assert main.state.coordinate_systems[0].Attributes().DatumAspect().ToDrawLabels()
     main.filter_optimal_viewpoints()
     assert len(main.state.face_centers) == len(main.state.current_faces)
     assert len(main.state.optimal_viewpoints) == len(main.state.current_faces)
@@ -256,7 +349,7 @@ def main_smoke():
     assert main.state.current_shape is None and main.state.selected_face is None
     main.display.View.Dump(str(output / "viewport_cleared.png"))
     assert not errors, errors
-    print("Smoke passed: Ribbon, repeated native selection, segmentation, viewpoints, workstation round trip and clear")
+    print("Smoke passed: layout recovery, local frame styles, native selection, segmentation, viewpoints, workstation round trip and clear")
     main._app_ready = False
     window.close()
 
