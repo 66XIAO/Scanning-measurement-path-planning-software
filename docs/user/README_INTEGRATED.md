@@ -98,6 +98,9 @@ $env:SCANNING_APP_CONDA_ENV='environment-name'
 For persistent Conda or RoboDK paths, copy
 `config/local_environment.example.ps1` to `config/local_environment.ps1` and
 edit the ignored copy. Machine-specific paths will not appear in Git status.
+The shared launcher also accepts `SCANNING_APP_PYTHON_EXE` and the optional
+same-Python-ABI `SCANNING_APP_OCC_PREFIX` workaround; see
+[`MULTI_MACHINE_RUNTIME.md`](MULTI_MACHINE_RUNTIME.md) for setup on each machine.
 
 For a preflight check without opening the window:
 

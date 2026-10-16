@@ -8,10 +8,7 @@ if not exist "%~dp0run_integrated_app.ps1" (
     exit /b 1
 )
 
-if /I "%~1"=="--check" (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0run_integrated_app.ps1" -CheckOnly
-    exit /b %ERRORLEVEL%
-)
+if /I "%~1"=="--check" goto check_environment
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0run_integrated_app.ps1"
 set "APP_EXIT_CODE=%ERRORLEVEL%"
@@ -24,3 +21,7 @@ if not "%APP_EXIT_CODE%"=="0" (
 )
 
 exit /b %APP_EXIT_CODE%
+
+:check_environment
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0run_integrated_app.ps1" -CheckOnly
+exit /b %ERRORLEVEL%

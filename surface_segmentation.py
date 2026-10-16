@@ -513,6 +513,24 @@ def _surface_area(shape):
     return float(properties.Mass())
 
 
+def _iter_brep_statuses(statuses):
+    """Read OCC status lists with or without Python's iterator protocol.
+
+    Some pythonocc builds expose only the native list iterator. Do not remove
+    elements from the analyzer-owned status list to traverse it.
+    """
+    try:
+        iterator = iter(statuses)
+    except TypeError:
+        native_iterator = BRepCheckModule.BRepCheck_ListIteratorOfListOfStatus(
+            getattr(statuses, "this", statuses))
+        while native_iterator.More():
+            yield native_iterator.Value()
+            native_iterator.Next()
+    else:
+        yield from iterator
+
+
 def _shape_validity(shape):
     try:
         analyzer = BRepCheck_Analyzer(shape, True, True, True)
@@ -535,7 +553,7 @@ def _shape_validity(shape):
     explorer = TopExp_Explorer(shape, TopAbs_FACE)
     while explorer.More():
         result = analyzer.Result(explorer.Current())
-        for status in result.Status():
+        for status in _iter_brep_statuses(result.Status()):
             status_value = int(status)
             if status_value != int(BRepCheckModule.BRepCheck_NoError):
                 found.add(status_names.get(status_value, str(status_value)))

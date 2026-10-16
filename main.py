@@ -60,6 +60,7 @@ from ui_panels import (
     create_operation_panel, update_operation_panel,
 )
 from workers import TaskRunner, supports_background_occ_objects
+from runtime_environment import select_qt_binding
 from export_utils import write_path_pose_csv, write_speed_plan_csv
 from speed_planning_core import ConstraintProfile, plan_speed_profile
 from speed_planning_ui import (
@@ -93,13 +94,11 @@ from workstation_io import (
 # 1. OCC viewer initialisation (must happen before any Qt widget work)
 # ---------------------------------------------------------------------------
 
-try:
-    import PyQt5  # noqa: F401
+if select_qt_binding() == "PyQt5":
     # pythonocc 7.4 names this backend ``qt-pyqt5``; newer releases expose
     # their own constant as well, so prefer the installed version's token.
     QT_BACKEND = getattr(occ_backend, "PYQT5", "pyqt5")
-except ImportError:
-    import PySide6  # noqa: F401
+else:
     QT_BACKEND = getattr(occ_backend, "PYSIDE6", "pyside6")
 
 display, start_display, add_menu, add_function_to_menu = init_display(QT_BACKEND)
