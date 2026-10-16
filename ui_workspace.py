@@ -39,7 +39,11 @@ class WorkspaceUI:
         self.search = None
         self.favorites_button = None
         self.redraw_scene = None
-        self.recovery_shortcut = QtWidgets.QShortcut(
+        # Qt5 exposes QShortcut in QtWidgets; Qt6 moved it to QtGui.
+        # Resolve lazily: a getattr default would evaluate QtWidgets.QShortcut
+        # even when the Qt6 class is available.
+        shortcut_class = getattr(QtGui, "QShortcut", None) or QtWidgets.QShortcut
+        self.recovery_shortcut = shortcut_class(
             QtGui.QKeySequence("Ctrl+Shift+0"), window)
         self.recovery_shortcut.setContext(QtCore.Qt.ApplicationShortcut)
         self.recovery_shortcut.activated.connect(self.default_layout)

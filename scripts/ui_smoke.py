@@ -2,6 +2,8 @@
 import os
 import sys
 import json
+import importlib
+import time
 from unittest import mock
 from pathlib import Path
 
@@ -11,6 +13,8 @@ sys.path.insert(0, str(ROOT))
 if len(sys.argv) > 3:
     os.environ["QT_SCALE_FACTOR"] = sys.argv[3]
 
+from runtime_environment import configure_runtime
+configure_runtime()
 import main
 from ui_theme import set_ribbon_size
 
@@ -34,6 +38,19 @@ def main_smoke():
     main._confirm_discard_or_save = lambda: True
     main.run()
     app = main.QtWidgets.QApplication.instance()
+    QTest = importlib.import_module(
+        main.QtCore.__name__.split(".", 1)[0] + ".QtTest").QTest
+
+    def wait_for_tasks(timeout=60.0):
+        deadline = time.monotonic() + timeout
+        while main.task_runner.active_workers:
+            app.processEvents()
+            if time.monotonic() >= deadline:
+                raise AssertionError("Background GUI task did not complete")
+            QTest.qWait(20)
+        app.processEvents()
+        assert not errors, errors
+
     window = main.get_main_window()
     window.show()
     app.processEvents()
@@ -71,7 +88,6 @@ def main_smoke():
     main._workspace_ui.default_layout()
     primary_toolbar.hide()
     main._workspace_ui.focus_layout()
-    from PyQt5.QtTest import QTest
     QTest.keyClick(window, main.QtCore.Qt.Key_0,
                    main.QtCore.Qt.ControlModifier | main.QtCore.Qt.ShiftModifier)
     app.processEvents()
@@ -96,6 +112,7 @@ def main_smoke():
     assert primary_toolbar.isVisible() and workflow.isVisible()
     assert window.findChild(main.QtWidgets.QDockWidget, "LayerControlDock").isVisible()
     main.import_model_from_path(str(model))
+    wait_for_tasks()
     assert main.state.current_shape is not None
     shape = main.state.current_shape
     assert ribbon is not None and ribbon.count() == 7
