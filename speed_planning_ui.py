@@ -123,9 +123,12 @@ def get_robodk_import_settings(parent=None, import_kind="speed"):
     dialog.setWindowTitle(tr("dialog.robodk.{}_title".format(import_kind)))
     dialog.setMinimumWidth(440)
     layout = QtWidgets.QFormLayout(dialog)
-    robot = QtWidgets.QLineEdit("UR10")
-    frame = QtWidgets.QLineEdit("Frame 2")
-    tool = QtWidgets.QLineEdit("Creaform MetraSCAN")
+    preferences = QtCore.QSettings(QtCore.QSettings.IniFormat,
+                                   QtCore.QSettings.UserScope,
+                                   "ScanningPathPlanner", "UI")
+    robot = QtWidgets.QLineEdit(str(preferences.value("robodk/robot_name", "UR10")))
+    frame = QtWidgets.QLineEdit(str(preferences.value("robodk/frame_name", "Frame 2")))
+    tool = QtWidgets.QLineEdit(str(preferences.value("robodk/tool_name", "Creaform MetraSCAN")))
     program = QtWidgets.QLineEdit(
         "IntegratedSpeedPlan" if import_kind == "speed" else "IntegratedPlannedPath")
     namespace = QtWidgets.QLineEdit("")
@@ -161,13 +164,16 @@ def get_robodk_import_settings(parent=None, import_kind="speed"):
 def get_robodk_mapping_settings(parent=None):
     """Collect exact RoboDK item names for a read-only station capture."""
     _QtCore, QtWidgets = _qt()
+    preferences = _QtCore.QSettings(_QtCore.QSettings.IniFormat,
+                                    _QtCore.QSettings.UserScope,
+                                    "ScanningPathPlanner", "UI")
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle(tr("dialog.robodk.mapping_title"))
     dialog.setMinimumWidth(460)
     layout = QtWidgets.QFormLayout(dialog)
-    robot = QtWidgets.QLineEdit("UR10")
-    frame = QtWidgets.QLineEdit("Frame 2")
-    tool = QtWidgets.QLineEdit("Creaform MetraSCAN")
+    robot = QtWidgets.QLineEdit(str(preferences.value("robodk/robot_name", "UR10")))
+    frame = QtWidgets.QLineEdit(str(preferences.value("robodk/frame_name", "Frame 2")))
+    tool = QtWidgets.QLineEdit(str(preferences.value("robodk/tool_name", "Creaform MetraSCAN")))
     explanation = QtWidgets.QLabel(tr("dialog.robodk.mapping_explanation"))
     explanation.setWordWrap(True)
     layout.addRow(explanation)
