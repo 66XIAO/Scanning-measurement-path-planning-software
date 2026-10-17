@@ -276,7 +276,7 @@ def apply_panel_scheme(scheme, surface_color="", text_color=""):
     if text_color:
         foreground = text_color
     style = ("QToolButton {{ text-align: left; background: {0}; color: {2}; "
-             "border: 1px solid {3}; border-radius: 6px; padding: 8px; }} "
+             "border: 1px solid {3}; border-radius: 6px; padding: 6px; }} "
              "QToolButton:hover {{ background: {1}; }}").format(
                  background, hover, foreground, border)
     for card in _workflow_cards.values():
@@ -312,8 +312,8 @@ def create_workflow_panel():
         card.setObjectName("WorkflowCard_" + key)
         card.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
         card.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        card.setMinimumHeight(54)
-        card.setStyleSheet("QToolButton { text-align: left; background: #F7FAFC; border: 1px solid #D4DCE3; border-radius: 6px; padding: 8px; } QToolButton:hover { background: #E7F2F9; border-color: #8BBEDC; }")
+        card.setMinimumHeight(46)
+        card.setStyleSheet("QToolButton { text-align: left; background: #F7FAFC; border: 1px solid #D4DCE3; border-radius: 6px; padding: 6px; } QToolButton:hover { background: #E7F2F9; border-color: #8BBEDC; }")
         destination = ("ribbon.file", "ribbon.path_planning",
                        "ribbon.path_planning", "ribbon.collision",
                        "ribbon.calibration_export")[index]

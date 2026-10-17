@@ -2420,7 +2420,7 @@ def _show_diagnostics():
     import platform
     lines = ["Python: " + sys.version.split()[0],
              "pythonOCC: " + str(PYTHONOCC_VERSION),
-             "Qt: " + QtCore.QT_VERSION_STR,
+             "Qt: " + QtCore.qVersion(),
              "OS: " + platform.platform(),
              "Model: " + (state.model_source_path or "-")]
     _show_ui_text("action.show_diagnostics", "\n".join(lines))

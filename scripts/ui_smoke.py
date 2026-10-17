@@ -16,7 +16,7 @@ if len(sys.argv) > 3:
 from runtime_environment import configure_runtime
 configure_runtime()
 import main
-from ui_theme import set_ribbon_size
+from ui_theme import ACTION_ICONS, load_icon, set_ribbon_size
 
 
 def main_smoke():
@@ -56,6 +56,17 @@ def main_smoke():
     app.processEvents()
     primary_toolbar = window.findChild(main.QtWidgets.QToolBar, "PrimaryWorkflowToolbar")
     assert primary_toolbar.isVisible()
+    with mock.patch.object(main, "_show_ui_text") as show_diagnostics:
+        main._show_diagnostics()
+        assert "Qt: " + main.QtCore.qVersion() in show_diagnostics.call_args[0][1]
+    for name in sorted(set(ACTION_ICONS.values()) | {"app"}):
+        for size in (20, 28, 36, 56, 72):
+            pixmap = load_icon(main.QtGui, name).pixmap(size, size)
+            assert not pixmap.isNull(), "Icon did not render: " + name
+            image = pixmap.toImage()
+            assert any(image.pixelColor(x, y).alpha() > 0
+                       for y in range(image.height())
+                       for x in range(image.width())), "Icon is transparent: " + name
     main._workspace_ui.focus_layout()
     app.processEvents()
     main._workspace_ui.default_layout()
@@ -147,7 +158,10 @@ def main_smoke():
                 for button in ribbon.widget(index).findChildren(main.QtWidgets.QToolButton):
                     if button.defaultAction() is not None:
                         assert button.width() >= button.fontMetrics().horizontalAdvance(
-                            button.text()) + 20, button.text()
+                            button.text()) + 16, button.text()
+                        assert button.height() >= button.minimumSizeHint().height(), (
+                            size_name, language, button.text(), button.height(),
+                            button.minimumSizeHint().height())
                 window.grab().save(str(output / ("tab_{}_{}_{}.png".format(
                     size_name, language, index))))
     main.switch_to_english()
@@ -267,7 +281,13 @@ def main_smoke():
     assert faces.More()
     main.select_single_face()
     app.processEvents()
-    center = canvas.rect().center()
+    # These calls go straight to OCC, whose coordinates are native-window
+    # pixels, rather than Qt's possibly scaled logical widget coordinates.
+    native_width, native_height = main.display.View.Window().Size()
+    center = main.QtCore.QPoint(native_width // 2, native_height // 2)
+    print("Native pick size: {}x{}; Qt canvas: {}x{}; DPR: {}".format(
+        native_width, native_height, canvas.width(), canvas.height(),
+        canvas.devicePixelRatioF()))
     main.display.Context.MoveTo(center.x(), center.y(), main.display.View, True)
     main.display.Select(center.x(), center.y())
     app.processEvents()

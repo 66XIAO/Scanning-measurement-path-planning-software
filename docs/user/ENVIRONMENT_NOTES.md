@@ -63,6 +63,23 @@ native OCC list iterators without mutating analyzer-owned lists. Existing old
 OCC constructor, meshing, worker-thread and rendering compatibility is retained;
 neither machine is required to upgrade OCC by this change.
 
+## UI icons and spacing
+
+SVG assets are resolved relative to `ui_theme.py` under `assets/`, independent
+of the current working directory. The loader checks actual icon pixels: some
+Qt installations can construct a QIcon but cannot load their SVG icon-engine
+plugin. In that case the selected binding's QtSvg renderer creates transparent
+icons at multiple resolutions from the same SVG files. Working native SVG
+engines continue to supply vector icons. Missing or invalid assets produce a
+path-specific error. Icons are owned by their callers rather than a global Qt
+object cache, so they do not outlive the application during shutdown.
+
+Compact, standard and large ribbon settings keep their existing preference
+names. Spacing is reduced while retaining font sizes; ribbon height follows
+the content and active Qt style, including room for horizontal scrolling.
+The UI smoke check verifies visible icon pixels, English/Chinese labels,
+button minimum sizes, layout recovery and the CAD/workstation workflow.
+
 ## RoboDK API discovery
 
 RoboDK path import remains supported. The bundled API is resolved in this order:

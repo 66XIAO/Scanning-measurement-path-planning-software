@@ -1,5 +1,6 @@
 """Qt palette, icons and integrated command ribbon."""
 from pathlib import Path
+import importlib
 import sys
 from i18n import tr
 
@@ -86,7 +87,7 @@ RIBBON_PAGES = (
     ("ribbon.help", (
         ("ribbon.group.support", ("action.search_help", "action.show_usage", "action.show_mouse_guide", "action.show_shortcuts", "action.show_diagnostics", "action.show_about")),)),
 )
-SIZES = {"compact": (24, 9, 86), "standard": (32, 10, 102), "large": (40, 11, 118)}
+SIZES = {"compact": (20, 9, 72), "standard": (28, 10, 84), "large": (36, 11, 96)}
 DROPDOWN_GROUPS = {
     "ribbon.group.workstation": "ribbon.dropdown.workstation",
     "ribbon.group.layers": "ribbon.dropdown.layers",
@@ -130,7 +131,41 @@ def _button_label(action):
 
 def load_icon(QtGui, name):
     path = ASSET_ROOT / "app_icon.svg" if name == "app" else ICON_ROOT / (name + ".svg")
-    return QtGui.QIcon(str(path)) if path.is_file() else QtGui.QIcon()
+    if not path.is_file():
+        raise RuntimeError("UI icon asset is missing: {}".format(path))
+    return _load_svg_icon(QtGui, str(path))
+
+
+def _load_svg_icon(QtGui, path):
+    """Retain native vector icons, with a fallback for broken SVG icon plugins.
+
+    QIcon can be non-null even when its SVG engine cannot produce any pixels.
+    QtSvg's renderer can still work in that runtime. Keep multiple raster sizes
+    for ribbon sizes and high-DPI screens without changing the SVG assets.
+    The caller owns the icon: no global Qt cache may outlive QApplication.
+    """
+    icon = QtGui.QIcon(path)
+    if not icon.pixmap(32, 32).isNull():
+        return icon
+    binding = QtGui.__name__.split(".", 1)[0]
+    try:
+        renderer_class = importlib.import_module(binding + ".QtSvg").QSvgRenderer
+    except (ImportError, OSError) as exc:
+        raise RuntimeError("SVG icon engine and renderer are unavailable: {}".format(path)) from exc
+    renderer = renderer_class(path)
+    if not renderer.isValid():
+        raise RuntimeError("Invalid SVG icon asset: {}".format(path))
+    icon = QtGui.QIcon()
+    for size in (16, 20, 24, 28, 32, 36, 40, 48, 56, 64, 72, 80, 96, 128, 256):
+        pixmap = QtGui.QPixmap(size, size)
+        pixmap.fill(QtGui.QColor(0, 0, 0, 0))
+        painter = QtGui.QPainter(pixmap)
+        try:
+            renderer.render(painter)
+        finally:
+            painter.end()
+        icon.addPixmap(pixmap)
+    return icon
 
 
 def decorate_action(QtGui, action, translation_key):
@@ -156,7 +191,7 @@ def apply_application_theme(QtCore, QtGui, QtWidgets, window):
         QTabWidget::pane, QToolBar { background: #FFFFFF; border: 0; border-bottom: 1px solid #D4DCE3; }
         QTabBar::tab { background: #F3F5F7; color: #263238; padding: 8px 16px; border: 1px solid #D4DCE3; }
         QTabBar::tab:selected { background: #FFFFFF; color: #21699F; border-bottom: 2px solid #2878B8; }
-        QToolButton { color: #263238; background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 5px; }
+        QToolButton { color: #263238; background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 3px; }
         QToolButton:hover { background: #E7F2F9; border-color: #8BBEDC; }
         QToolButton:pressed { background: #D3E9F6; }
         QMenu { background: #FFFFFF; color: #263238; border: 1px solid #D4DCE3; }
@@ -166,7 +201,7 @@ def apply_application_theme(QtCore, QtGui, QtWidgets, window):
         QLabel, QCheckBox, QPlainTextEdit, QTreeWidget { color: #263238; }
         QDockWidget::title { background: #E8EDF1; padding: 7px; }
         QScrollArea, QScrollArea > QWidget > QWidget { background: #FFFFFF; border: 0; }
-        QGroupBox { color: #263238; border: 1px solid #D4DCE3; border-radius: 5px; margin-top: 10px; padding: 8px; font-weight: 600; }
+        QGroupBox { color: #263238; border: 1px solid #D4DCE3; border-radius: 5px; margin-top: 8px; padding: 6px; font-weight: 600; }
         QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
         QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background: #FFFFFF; color: #263238; border: 1px solid #AEBCC7; border-radius: 4px; padding: 4px; selection-background-color: #9ACCE8; }
         QPushButton { background: #E7F2F9; color: #263238; border: 1px solid #8BBEDC; border-radius: 4px; padding: 5px 12px; }
@@ -237,13 +272,13 @@ def create_primary_toolbar(QtCore, QtWidgets, window, actions):
         scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         page = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(page)
-        row.setContentsMargins(8, 5, 8, 5)
-        row.setSpacing(8)
+        row.setContentsMargins(6, 3, 6, 3)
+        row.setSpacing(6)
         for group_key, keys in groups:
             box = QtWidgets.QGroupBox(tr(group_key))
             group_titles.append((box, group_key))
             box_row = QtWidgets.QHBoxLayout(box)
-            box_row.setContentsMargins(5, 8, 5, 4)
+            box_row.setContentsMargins(4, 5, 4, 3)
             if group_key in DROPDOWN_GROUPS:
                 menu_button = QtWidgets.QToolButton(box)
                 menu_button.setObjectName("RibbonDropdown_" + group_key)
@@ -327,10 +362,26 @@ def set_ribbon_size(size):
         font.setPointSize(font_size)
         button.setFont(font)
         metrics = button.fontMetrics()
-        label_width = metrics.horizontalAdvance(button.text()) + 24
+        label_width = metrics.horizontalAdvance(button.text()) + 16
         button.setFixedWidth(max(minimum_width, label_width))
-        button.setMinimumHeight(icon_size + metrics.height() + 22)
-    expanded_height = icon_size + font_size * 6 + 110
+        # Account for the active Qt style's icon/text/checkable-button padding.
+        # Reset the previous minimum so switching from large to compact shrinks.
+        button.setMinimumHeight(0)
+        button.setMinimumHeight(max(icon_size + metrics.height() + 12,
+                                    button.minimumSizeHint().height()))
+    tabs = _ribbon["tabs"]
+    body_height = 0
+    scroll_height = 0
+    for index in range(tabs.count()):
+        scroll = tabs.widget(index)
+        page = scroll.widget()
+        page.layout().invalidate()
+        page.layout().activate()
+        body_height = max(body_height, page.minimumSizeHint().height())
+        # Reserve horizontal scroll space so narrow windows do not clip buttons.
+        scroll_height = max(scroll_height, scroll.frameWidth() * 2
+                            + scroll.horizontalScrollBar().sizeHint().height())
+    expanded_height = tabs.tabBar().sizeHint().height() + body_height + scroll_height + 2
     _ribbon["expandedHeight"] = expanded_height
     if not (_ribbon["tabs"].property("collapsed") == True):
         _ribbon["tabs"].setFixedHeight(expanded_height)
