@@ -34,7 +34,7 @@ def preflight():
     versions = {"python": sys.version.split()[0], "executable": sys.executable}
     failures = []
     for module_name in (
-            "numpy", "OCC", "OCC.Core.gp", "OCC.Extend.DataExchange",
+            "numpy", "ABC", "OCC", "OCC.Core.gp", "OCC.Extend.DataExchange",
             "OCC.Display.OCCViewer"):
         try:
             module = importlib.import_module(module_name)

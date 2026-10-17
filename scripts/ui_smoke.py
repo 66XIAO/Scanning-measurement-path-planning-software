@@ -312,6 +312,7 @@ def main_smoke():
     u = int(sys.argv[4]) if len(sys.argv) > 4 else 2
     v = int(sys.argv[5]) if len(sys.argv) > 5 else 2
     main.get_user_segment_params = lambda **kwargs: (u, v)
+    background_task_runner = main.run_background_task
     main.run_background_task = (
         lambda title, message, fn, on_success, on_error=None: on_success(fn()))
     main.segment_faces()
@@ -359,6 +360,33 @@ def main_smoke():
     main.filter_optimal_viewpoints()
     assert len(main.state.face_centers) == len(main.state.current_faces)
     assert len(main.state.optimal_viewpoints) == len(main.state.current_faces)
+    # Exercise the real ABC callback/worker/result path with a bounded smoke
+    # budget, then include the resulting path in the workstation round trip.
+    from dataclasses import replace
+    import numpy as np
+    from planning import build_distance_matrix, calculate_path_length
+    abc_config = replace(main.DEFAULT_ABC_CONFIG, food_number=6,
+                         maximum_evaluation=120, show_progress=False,
+                         vis_save_dir=str(output / "abc_plots"))
+    with mock.patch.object(main, "DEFAULT_ABC_CONFIG", abc_config), \
+            mock.patch.object(main, "run_abc_solver", side_effect=lambda points: (
+                importlib.import_module("planning").run_abc_solver(points, abc_config))), \
+            mock.patch.object(main, "run_background_task", background_task_runner):
+        main.solve_with_abc_algorithm()
+        wait_for_tasks()
+    assert main.state.last_path_algorithm == "abc"
+    assert sorted(main.state.optimal_path) == list(range(len(main.state.optimal_viewpoints)))
+    geometric_length = calculate_path_length(
+        main.state.optimal_path, build_distance_matrix(main.state.optimal_viewpoints))
+    assert np.isclose(main.state.last_path_length, geometric_length)
+    assert main.state.optimal_path_objects
+    main.display.Repaint()
+    app.processEvents()
+    main.display.View.Dump(str(output / "viewport_abc.png"))
+    saved_abc_path = list(main.state.optimal_path)
+    saved_abc_length = main.state.last_path_length
+    print("ABC GUI worker: {} points, length {:.6f} mm".format(
+        len(saved_abc_path), saved_abc_length))
     archive = output / "smoke.swstation"
     assert main._save_workstation_to(str(archive))
     assert not main.state.workstation_dirty
@@ -371,6 +399,12 @@ def main_smoke():
     assert main.open_dropped_file(str(archive))
     assert len(main.state.current_faces) == patch_count
     assert len(main.state.optimal_viewpoints) == patch_count
+    assert main.state.last_path_algorithm == "abc"
+    assert main.state.optimal_path == saved_abc_path
+    assert np.isclose(main.state.last_path_length, saved_abc_length)
+    main.display.Repaint()
+    app.processEvents()
+    main.display.View.Dump(str(output / "viewport_abc_reopened.png"))
     assert not main._awaiting_face_selection
     assert main.state.model_source_path == str(model.resolve())
     assert len(main.display._select_callbacks) == 1
@@ -386,7 +420,7 @@ def main_smoke():
     assert main.state.current_shape is None and main.state.selected_face is None
     main.display.View.Dump(str(output / "viewport_cleared.png"))
     assert not errors, errors
-    print("Smoke passed: layout recovery, local frame styles, native selection, segmentation, viewpoints, workstation round trip and clear")
+    print("Smoke passed: layout recovery, local frame styles, native selection, segmentation, viewpoints, ABC worker, workstation round trip and clear")
     main._app_ready = False
     window.close()
 

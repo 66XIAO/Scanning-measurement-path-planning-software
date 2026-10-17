@@ -20,3 +20,6 @@ artifacts/
 # Local diagnostics, screenshots and review evidence; keep shared guides in docs/user.
 /tmp/
 /docs/reports/
+
+# Optional ABC path-evolution plots (generated at runtime).
+/viz_frames/

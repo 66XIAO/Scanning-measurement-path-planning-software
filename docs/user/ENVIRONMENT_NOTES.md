@@ -63,6 +63,17 @@ native OCC list iterators without mutating analyzer-owned lists. Existing old
 OCC constructor, meshing, worker-thread and rendering compatibility is retained;
 neither machine is required to upgrade OCC by this change.
 
+## ABC path planner dependencies
+
+The ABC solver is included as `ABC.py` in this repository; no original-project
+directory or extra `PYTHONPATH` is needed. Its required dependency is NumPy.
+`progressbar` (from progressbar2) and Matplotlib are optional, used for console
+progress and plot output when requested. Missing optional modules do not block
+path planning. The solver no longer imports the unused `deap` package.
+The startup preflight checks that the bundled module imports successfully.
+See [ABC integration notes](../architecture/ABC_INTEGRATION.md) for provenance,
+the preserved objective function, and regression checks.
+
 ## UI icons and spacing
 
 SVG assets are resolved relative to `ui_theme.py` under `assets/`, independent
